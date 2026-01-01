@@ -1,0 +1,55 @@
+---
+title: HiChIP Tutorial
+description: Complete HiChIP analysis workflow with Chr3D
+---
+
+## Complete HiChIP Analysis Workflow
+
+This tutorial demonstrates end-to-end HiChIP data analysis using Chr3D.
+
+## Load Data
+
+```python
+from chr3d import HiChIP
+
+hichip = HiChIP.from_pairs("GM12878_H3K27ac_HiChIP.pairs.gz")
+```
+
+## Quality Control
+
+```python
+qc = hichip.qc_report()
+print(f"Enrichment: {qc['enrichment']:.2f}x")
+print(f"Long-range: {qc['long_range_percent']:.1f}%")
+```
+
+## Filter Data
+
+```python
+filtered = hichip.filter_pairs(min_mapq=30, remove_duplicates=True)
+filtered = filtered.filter_distance(min_distance=5000, max_distance=2000000)
+```
+
+## Call Loops
+
+```python
+loops = filtered.call_loops(method="hichipper", fdr=0.01)
+```
+
+## Annotate with Peaks
+
+```python
+from chr3d.utils import load_peaks
+
+peaks = load_peaks("H3K27ac_peaks.bed")
+loops = loops.annotate_peaks(peaks=peaks, peak_type="H3K27ac")
+```
+
+## Export Results
+
+```python
+loops.to_bedpe("loops_annotated.bedpe")
+hichip.to_cooler("output.cool", resolution=10000)
+```
+
+See [API reference](../api/hichip) for detailed method documentation.

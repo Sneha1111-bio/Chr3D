@@ -1,0 +1,48 @@
+---
+title: ChIA-PET Tutorial
+description: Complete ChIA-PET analysis workflow with Chr3D
+---
+
+## Complete ChIA-PET Analysis Workflow
+
+This tutorial demonstrates a complete ChIA-PET data analysis pipeline using Chr3D.
+
+## Load Data
+
+```python
+from chr3d import ChIAPET
+
+chiapet = ChIAPET.from_bedpe("K562_CTCF_ChIAPET.bedpe")
+```
+
+## Quality Control
+
+```python
+qc = chiapet.qc_report()
+print(f"Linker efficiency: {qc['linker_efficiency']:.1%}")
+print(f"Cis/Trans ratio: {qc['cis_trans_ratio']:.2f}")
+```
+
+## Filter Data
+
+```python
+filtered = chiapet.filter_pets(min_pets=3)
+filtered = filtered.filter_distance(min_distance=5000)
+```
+
+## Call Peaks and Loops
+
+```python
+peaks = filtered.call_peaks(genome="hg38", qvalue=0.01)
+loops = filtered.call_loops(min_pets=3, peak_mode=True)
+```
+
+## Export Results
+
+```python
+loops.to_bedpe("loops.bedpe")
+peaks.to_bed("peaks.bed")
+chiapet.to_hic("output.hic", resolution=5000)
+```
+
+See [API reference](../api/chiapet) for detailed method documentation.

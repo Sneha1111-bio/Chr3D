@@ -1,0 +1,41 @@
+---
+title: Matrix Generation
+description: Creating and working with contact matrices
+---
+
+## Contact Matrix Generation
+
+Contact matrices are the fundamental data structure for chromatin conformation analysis.
+
+## From Pairs to Matrix
+
+```python
+from chr3d import HiC
+
+hic = HiC.from_pairs("sample.pairs.gz")
+matrix = hic.to_matrix(resolution=10000, balance=False)
+```
+
+## Multi-Resolution Matrices
+
+```python
+hic.to_cooler(
+    output="sample.mcool",
+    resolutions=[5000, 10000, 25000, 50000],
+    genome="hg38"
+)
+```
+
+## Normalization
+
+```python
+hic_norm = hic.normalize(method="ICE", max_iter=500)
+```
+
+## Export Formats
+
+- **Cooler (.cool, .mcool)** - Recommended
+- **Juicebox (.hic)** - For visualization
+- **Text formats** - For custom analysis
+
+See tutorials for complete examples.

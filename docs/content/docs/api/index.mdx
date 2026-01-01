@@ -1,0 +1,36 @@
+---
+title: API Reference
+description: Complete API documentation for Chr3D
+---
+
+## Chr3D API Reference
+
+Chr3D provides a unified Python API for analyzing 3D chromatin conformation data.
+
+## Core Classes
+
+### HiC
+
+[HiC API Reference](./hic) - Analyze Hi-C data for genome-wide chromatin architecture.
+
+### ChIAPET
+
+[ChIAPET API Reference](./chiapet) - Analyze ChIA-PET data for protein-specific chromatin interactions.
+
+### HiChIP
+
+[HiChIP API Reference](./hichip) - Analyze HiChIP data for low-input protein-specific interactions.
+
+### Utilities
+
+[Utilities API Reference](./utils) - Helper functions for common tasks.
+
+## Quick Example
+
+```python
+from chr3d import HiC
+
+hic = HiC.from_cooler("sample.cool")
+hic_norm = hic.normalize(method="ICE")
+loops = hic_norm.call_loops(method="hiccups")
+```

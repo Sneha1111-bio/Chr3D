@@ -1,0 +1,51 @@
+---
+title: Quality Control
+description: QC metrics and best practices for 3D chromatin data
+---
+
+## Quality Control Guidelines
+
+Quality control is critical for ensuring reliable results from chromatin conformation capture experiments.
+
+## Universal QC Metrics
+
+### Valid Pairs Percentage
+
+```python
+qc = data.qc_report()
+print(f"Valid pairs: {qc['valid_pairs_pct']:.1f}%")
+```
+
+**Thresholds:**
+- **Hi-C:** >40% (good), 30-40% (acceptable)
+- **ChIA-PET:** >30% (good), 20-30% (acceptable)
+- **HiChIP:** >35% (good), 25-35% (acceptable)
+
+### Cis/Trans Ratio
+
+Expected values:
+- **Hi-C:** >4
+- **ChIA-PET:** >4 for CTCF
+- **HiChIP:** >5
+
+### Library Complexity
+
+- **>0.8:** Excellent
+- **0.6-0.8:** Good
+- **&lt;0.6:** Over-sequenced
+
+## Protocol-Specific QC
+
+### Hi-C
+- Long-range % should be 40-50%
+- Distance decay follows power law
+
+### ChIA-PET
+- Linker efficiency >60% (good)
+- PET clusters median >3
+
+### HiChIP
+- Enrichment >5x (good)
+- Trans % &lt;15%
+
+See tutorials for detailed QC workflows.

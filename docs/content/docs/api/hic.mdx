@@ -1,0 +1,28 @@
+---
+title: Hi-C API
+description: Complete API reference for HiC class
+---
+
+## HiC Class
+
+The `HiC` class provides methods for analyzing Hi-C data for genome-wide chromatin architecture studies.
+
+## Key Methods
+
+### Loading Data
+- `from_cooler()` - Load from cooler format
+- `from_hic()` - Load from Juicebox format
+- `from_pairs()` - Load from pairs format
+
+### Analysis
+- `normalize()` - Normalize contact matrix (ICE, KR, VC)
+- `call_loops()` - Call chromatin loops
+- `call_tads()` - Call TADs
+- `call_compartments()` - Call A/B compartments
+
+### Visualization
+- `plot_matrix()` - Plot contact matrix
+- `plot_tads()` - Plot TADs
+- `plot_compartments()` - Plot compartments
+
+See tutorials for complete usage examples.

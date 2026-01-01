@@ -1,0 +1,44 @@
+---
+title: ChIA-PET vs HiChIP vs Hi-C
+description: Detailed comparison of 3D chromatin conformation capture methods
+---
+
+## Protocol Comparison
+
+Choosing the right chromatin conformation capture method depends on your biological question, sample availability, and budget.
+
+## Decision Guide
+
+<Mermaid chart={`graph TD
+    A[Start] --> B{Protein-specific<br/>interactions?}
+    B -->|No| C[Hi-C]
+    B -->|Yes| D{Input cells<br/>available?}
+    D -->|>10M cells| E{Budget?}
+    E -->|High| F[ChIA-PET]
+    E -->|Limited| G[HiChIP]
+    D -->|<1M cells| G
+`} />
+
+## Quick Comparison
+
+| Feature | Hi-C | ChIA-PET | HiChIP |
+|---------|------|----------|---------|
+| **Input cells** | 1-10M | 10-50M | 100K-1M |
+| **Protein specificity** | No | Yes | Yes |
+| **Cost** | $$ | $$$$ | $$ |
+| **Best for** | Genome architecture | Specific proteins | Low-input loops |
+
+## When to Use Each
+
+### Hi-C
+Use for genome-wide chromatin architecture, TAD identification, and compartment analysis.
+
+### ChIA-PET
+Use for high-confidence protein-specific loops with abundant sample material.
+
+### HiChIP
+Use for protein-specific interactions with limited input material or large cohort studies.
+
+## Chr3D Support
+
+Chr3D provides unified analysis for all three protocols with consistent APIs and workflows.

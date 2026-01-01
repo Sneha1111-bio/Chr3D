@@ -1,0 +1,40 @@
+---
+title: ChIAPET API
+description: Complete API reference for ChIAPET class
+---
+
+## ChIAPET Class
+
+The `ChIAPET` class provides methods for analyzing ChIA-PET (Chromatin Interaction Analysis by Paired-End Tag sequencing) data.
+
+## Loading Data
+
+### from_bedpe()
+
+Load ChIA-PET data from BEDPE format.
+
+```python
+from chr3d import ChIAPET
+
+chiapet = ChIAPET.from_bedpe(
+    path="sample.bedpe",
+    filter_linkers=True,
+    genome="hg38"
+)
+```
+
+## Quality Control
+
+### qc_report()
+
+Generate comprehensive QC metrics.
+
+```python
+qc = chiapet.qc_report()
+print(qc['valid_pairs'])
+print(qc['linker_efficiency'])
+```
+
+## Methods
+
+See the full API documentation for complete method details.

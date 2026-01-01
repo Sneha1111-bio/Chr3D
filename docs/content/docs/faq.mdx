@@ -1,0 +1,53 @@
+---
+title: FAQ
+description: Frequently asked questions about Chr3D
+---
+
+## Frequently Asked Questions
+
+### General Questions
+
+#### What is Chr3D?
+
+Chr3D is a unified Python ecosystem for analyzing 3D chromatin conformation data from Hi-C, ChIA-PET, and HiChIP experiments.
+
+#### How do I install Chr3D?
+
+```bash
+pip install chr3d
+```
+
+#### Which protocols does Chr3D support?
+
+Chr3D supports Hi-C, ChIA-PET, and HiChIP with a unified API.
+
+### Analysis Questions
+
+#### What resolution should I use?
+
+- **5kb:** High-resolution (requires >1B reads)
+- **10kb:** Standard analysis (requires >500M reads)
+- **25kb:** TADs and compartments (requires >200M reads)
+
+#### How do I call loops?
+
+```python
+from chr3d import HiC
+
+hic = HiC.from_cooler("sample.cool")
+hic_norm = hic.normalize(method="ICE")
+loops = hic_norm.call_loops(method="hiccups", fdr=0.1)
+```
+
+### Quality Control
+
+#### What QC metrics should I check?
+
+- Valid pairs percentage
+- Cis/Trans ratio
+- Library complexity
+- Protocol-specific metrics (linker efficiency for ChIA-PET, enrichment for HiChIP)
+
+### Getting Help
+
+For more detailed information, see the [Tutorials](./tutorials) and [Guides](./guides) sections.

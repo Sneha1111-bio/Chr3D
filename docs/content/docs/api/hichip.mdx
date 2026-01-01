@@ -1,0 +1,25 @@
+---
+title: HiChIP API
+description: Complete API reference for HiChIP class
+---
+
+## HiChIP Class
+
+The `HiChIP` class provides methods for analyzing HiChIP data for protein-centric interaction mapping.
+
+## Key Methods
+
+### Loading Data
+- `from_pairs()` - Load from pairs format
+- `from_cooler()` - Load from cooler format
+
+### Analysis
+- `normalize()` - Normalize contact matrix
+- `call_loops()` - Call loops with HiChIPper algorithm
+- `annotate_peaks()` - Annotate with ChIP-seq peaks
+
+### Quality Control
+- `qc_report()` - Generate QC metrics
+- `compute_enrichment()` - Compute enrichment over background
+
+See tutorials for complete usage examples.

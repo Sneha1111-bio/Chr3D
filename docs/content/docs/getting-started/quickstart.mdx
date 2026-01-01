@@ -1,0 +1,45 @@
+---
+title: Quickstart
+description: Get started with Chr3D in 5 minutes
+---
+
+## Quick Start Guide
+
+Chr3D provides a unified Python ecosystem for analyzing 3D chromatin conformation data.
+
+### Hi-C Analysis
+
+```python
+from chr3d import HiC
+
+hic = HiC.from_cooler("data.cool")
+hic_norm = hic.normalize(method="ICE")
+loops = hic_norm.call_loops(method="hiccups")
+```
+
+### ChIA-PET Analysis
+
+```python
+from chr3d import ChIAPET
+
+chiapet = ChIAPET.from_bedpe("interactions.bedpe")
+filtered = chiapet.filter_pets(min_pets=3)
+peaks = chiapet.call_peaks()
+loops = chiapet.call_loops(min_pets=3, peak_mode=True)
+```
+
+### HiChIP Analysis
+
+```python
+from chr3d import HiChIP
+
+hichip = HiChIP.from_pairs("pairs.txt")
+loops = hichip.call_loops(method="hichipper", fdr=0.01)
+hichip.to_cooler("output.cool")
+```
+
+## Next Steps
+
+- [Complete Tutorials](../tutorials)
+- [API Reference](../api)
+- [Guides](../guides)
