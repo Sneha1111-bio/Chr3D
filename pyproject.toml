@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rowan-pet"
+version = "2.0.0"
+description = "ChIA-PET and HiChIP Analysis Pipeline"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Rowan-PET Development Team", email = "rowan-pet@example.com"}
+]
+keywords = ["ChIA-PET", "HiChIP", "chromatin", "genomics", "bioinformatics", "3D-genome"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+    "biopython>=1.79",
+    "pysam>=0.19.0",
+    "tqdm>=4.62.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+]
+
+[project.scripts]
+rowan-pet = "rowan_pet.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rowan-pet/rowan-pet"
+Documentation = "https://rowan-pet.readthedocs.io"
+Repository = "https://github.com/rowan-pet/rowan-pet"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rowan_pet = ["*.json", "*.yaml"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39', 'py310', 'py311', 'py312']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=rowan_pet"
