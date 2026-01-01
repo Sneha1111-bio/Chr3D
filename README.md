@@ -1,6 +1,6 @@
-# Rowan-PET: ChIA-PET and HiChIP Analysis Pipeline
+# Chr3D: A Comprehensive Python Framework for Chromatin Interactions Analysis
 
-A comprehensive Python library for analyzing chromatin interaction data from ChIA-PET and HiChIP experiments. Similar to how **Scanpy** is the standard for single-cell RNA-seq analysis, **Rowan-PET** aims to be the standard for chromatin interaction analysis.
+A comprehensive Python library for analyzing chromatin interaction data from ChIA-PET, HiChIP, and Hi-C experiments. **Chr3D** provides a complete pipeline from raw FASTQ files to statistically significant chromatin loops.
 
 ## Features
 
@@ -15,8 +15,8 @@ A comprehensive Python library for analyzing chromatin interaction data from ChI
 
 ```bash
 # Clone and install
-git clone https://github.com/rowan-pet/rowan-pet.git
-cd rowan-pet
+git clone https://github.com/rudrajoshi2481/Chr3D.git
+cd Chr3D
 pip install -e .
 
 # Install external dependencies via conda
@@ -39,29 +39,29 @@ pip install parasail  # For SIMD-accelerated linker filtering
 
 ## Python API
 
-Rowan-PET is designed as a Python library. Import and use individual modules directly:
+Chr3D is designed as a Python library. Import and use individual modules directly:
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Check version
-print(rp.__version__)  # 3.0.0
+print(c3d.__version__)  # 3.0.0
 ```
 
 ### Available Classes
 
 | Class | Step | Description |
 |-------|------|-------------|
-| `rp.LinkerFilterV3` | 1 | Linker filtering with parasail SIMD |
-| `rp.PETMapper` | 2 | Genomic mapping with BWA |
-| `rp.ChIAPETPurifier` | 3a | ChIA-PET deduplication & merging |
-| `rp.HiChIPPurifier` | 3b | HiChIP same-fragment removal |
-| `rp.PETCategorizer` | 4 | PET classification (iPET/sPET/oPET) |
-| `rp.PeakCaller` | 5 | Peak calling with MACS3 |
-| `rp.PreClusterer` | 6.1 | Pre-clustering with tag extension |
-| `rp.AnchorClusterer` | 6.2 | Anchor clustering |
-| `rp.StatisticalSignificance` | 6.3 | FDR-corrected loop significance |
-| `rp.RestrictionSiteGenerator` | Util | Generate restriction fragments |
+| `c3d.LinkerFilterV3` | 1 | Linker filtering with parasail SIMD |
+| `c3d.PETMapper` | 2 | Genomic mapping with BWA |
+| `c3d.ChIAPETPurifier` | 3a | ChIA-PET deduplication & merging |
+| `c3d.HiChIPPurifier` | 3b | HiChIP same-fragment removal |
+| `c3d.PETCategorizer` | 4 | PET classification (iPET/sPET/oPET) |
+| `c3d.PeakCaller` | 5 | Peak calling with MACS3 |
+| `c3d.PreClusterer` | 6.1 | Pre-clustering with tag extension |
+| `c3d.AnchorClusterer` | 6.2 | Anchor clustering |
+| `c3d.StatisticalSignificance` | 6.3 | FDR-corrected loop significance |
+| `c3d.RestrictionSiteGenerator` | Util | Generate restriction fragments |
 
 ---
 
@@ -72,10 +72,10 @@ print(rp.__version__)  # 3.0.0
 Detects and removes linker sequences from paired-end reads using SIMD-accelerated local alignment.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize linker filter
-linker_filter = rp.LinkerFilterV3(
+linker_filter = c3d.LinkerFilterV3(
     linker_a="GTTGGATAAG",           # Linker A sequence
     linker_b="GTTGGAATGT",           # Linker B sequence  
     min_score_ratio=0.7,             # Minimum alignment score ratio (0-1)
@@ -121,10 +121,10 @@ print(f"Linker composition: {stats['linker_composition']}")
 Maps linker-filtered tags to reference genome using BWA.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize mapper
-mapper = rp.PETMapper(
+mapper = c3d.PETMapper(
     genome_index="/path/to/hg38.fa",  # BWA-indexed genome
     n_threads=24,                      # Number of threads
     use_bwa_mem=True,                  # True=BWA-MEM (fast), False=BWA-ALN (accurate)
@@ -171,10 +171,10 @@ print(f"Unique pairs: {stats['unique_pairs']:,}")
 Deduplication and merging of similar PETs for ChIA-PET data.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize purifier
-purifier = rp.ChIAPETPurifier(
+purifier = c3d.ChIAPETPurifier(
     merge_distance=2,      # Max distance to merge similar PETs (bp)
     min_mapq=30            # Minimum mapping quality
 )
@@ -206,10 +206,10 @@ print(f"After merge: {stats['after_merge']:,}")
 Removes same-fragment PETs for HiChIP data using restriction site information.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize HiChIP purifier
-purifier = rp.HiChIPPurifier(
+purifier = c3d.HiChIPPurifier(
     restriction_file="/path/to/MboI_sites.bed",  # Restriction site BED file
     min_insert_size=1                             # Min fragment skip distance
 )
@@ -241,10 +241,10 @@ print(f"Output PETs: {stats['output_pets']:,}")
 Classifies PETs into iPET (inter-ligation), sPET (self-ligation), and oPET (other).
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize categorizer
-categorizer = rp.PETCategorizer(
+categorizer = c3d.PETCategorizer(
     mode='chiapet',              # 'chiapet' or 'hichip'
     self_ligation_cutoff=None    # None = use mode default
 )
@@ -284,16 +284,16 @@ print(f"oPETs: {stats['opet']['count']:,} ({stats['opet']['percentage']:.1f}%)")
 Identifies protein binding sites using MACS3 on sPET data.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize peak caller
-peak_caller = rp.PeakCaller(
+peak_caller = c3d.PeakCaller(
     genome_size='hs',          # 'hs' (human), 'mm' (mouse), or integer
     qvalue_cutoff=0.05,        # Q-value threshold
     keep_dup='1',              # '1' = remove duplicates, 'all' = keep
     build_model=True,          # Build MACS3 shift model
     macs3_path='macs3',        # Path to MACS3 executable
-    conda_env='rowan-hic'      # Conda environment (optional)
+    conda_env=None             # Conda environment (optional)
 )
 
 # Run peak calling
@@ -326,10 +326,10 @@ print(f"Output file: {stats['peak_file']}")
 Extends PET tags and creates initial clusters.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize pre-clusterer
-pre_clusterer = rp.PreClusterer(
+pre_clusterer = c3d.PreClusterer(
     extension_length=500,                    # Tag extension length (bp)
     chrom_sizes_file="/path/to/chrom.sizes"  # Optional chromosome sizes
 )
@@ -360,10 +360,10 @@ print(f"Output file: {stats['output_file']}")
 Merges overlapping anchor clusters.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize anchor clusterer
-anchor_clusterer = rp.AnchorClusterer()
+anchor_clusterer = c3d.AnchorClusterer()
 
 # Run anchor clustering
 stats = anchor_clusterer.cluster_anchors(
@@ -384,10 +384,10 @@ print(f"Reduction: {stats['reduction']:,} clusters merged")
 Calculates statistical significance of chromatin loops using hypergeometric test with FDR correction.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize statistical significance calculator
-stat_sig = rp.StatisticalSignificance(
+stat_sig = c3d.StatisticalSignificance(
     ipet_count_threshold=2,    # Minimum iPET count per loop
     pvalue_cutoff=0.05,        # FDR threshold
     extension_length=500       # Tag extension for counting
@@ -422,10 +422,10 @@ print(f"Output file: {stats['output_file']}")
 Generates restriction fragments from a genome FASTA file.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Initialize generator
-generator = rp.RestrictionSiteGenerator(
+generator = c3d.RestrictionSiteGenerator(
     enzyme="MboI",              # Restriction enzyme name
     recognition_site="GATC"     # Recognition sequence
 )
@@ -447,7 +447,7 @@ print(f"Total fragments: {stats['total_fragments']:,}")
 ### ChIA-PET Analysis
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Configuration
 GENOME = "/path/to/hg38.fa"
@@ -457,7 +457,7 @@ OUTPUT = "results/"
 THREADS = 24
 
 # Step 1: Linker Filtering
-linker_filter = rp.LinkerFilterV3(
+linker_filter = c3d.LinkerFilterV3(
     linker_a="GTTGGATAAG",
     linker_b="GTTGGAATGT",
     n_threads=THREADS
@@ -465,7 +465,7 @@ linker_filter = rp.LinkerFilterV3(
 linker_filter.filter_fastq(R1, R2, "filtered", OUTPUT)
 
 # Step 2: Mapping (for each linker combination)
-mapper = rp.PETMapper(GENOME, n_threads=THREADS, use_bwa_mem=True)
+mapper = c3d.PETMapper(GENOME, n_threads=THREADS, use_bwa_mem=True)
 for combo in ["1_1", "1_2", "2_1", "2_2"]:
     mapper.map_linker_filtered_fastq(
         f"{OUTPUT}/filtered.{combo}.R1.fastq",
@@ -474,28 +474,28 @@ for combo in ["1_1", "1_2", "2_1", "2_2"]:
     )
 
 # Step 3: Purifying
-purifier = rp.ChIAPETPurifier(merge_distance=2)
+purifier = c3d.ChIAPETPurifier(merge_distance=2)
 purifier.purify(f"{OUTPUT}/mapped_merged.bedpe", "purified", OUTPUT)
 
 # Step 4: Categorization
-categorizer = rp.PETCategorizer(mode='chiapet')
+categorizer = c3d.PETCategorizer(mode='chiapet')
 categorizer.categorize(f"{OUTPUT}/purified.bedpe", "categorized", OUTPUT)
 
 # Step 5: Peak Calling
-peak_caller = rp.PeakCaller(genome_size='hs')
+peak_caller = c3d.PeakCaller(genome_size='hs')
 peak_caller.call_peaks_from_bedpe(f"{OUTPUT}/categorized.spet", "peaks", OUTPUT)
 
 # Step 6: Loop Calling
-pre_clusterer = rp.PreClusterer(extension_length=500)
+pre_clusterer = c3d.PreClusterer(extension_length=500)
 pre_clusterer.pre_cluster(f"{OUTPUT}/categorized.ipet", f"{OUTPUT}/loop")
 
-anchor_clusterer = rp.AnchorClusterer()
+anchor_clusterer = c3d.AnchorClusterer()
 anchor_clusterer.cluster_anchors(
     f"{OUTPUT}/loop.pre_cluster.sorted",
     f"{OUTPUT}/anchor_clusters.txt"
 )
 
-stat_sig = rp.StatisticalSignificance(ipet_count_threshold=2, pvalue_cutoff=0.05)
+stat_sig = c3d.StatisticalSignificance(ipet_count_threshold=2, pvalue_cutoff=0.05)
 stat_sig.calculate_significance(
     f"{OUTPUT}/anchor_clusters.txt",
     f"{OUTPUT}/categorized.ipet",
@@ -506,7 +506,7 @@ stat_sig.calculate_significance(
 ### HiChIP Analysis
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Configuration (HiChIP-specific)
 GENOME = "/path/to/hg38.fa"
@@ -517,7 +517,7 @@ OUTPUT = "results/"
 THREADS = 24
 
 # Step 1: Linker Filtering (same as ChIA-PET)
-linker_filter = rp.LinkerFilterV3(
+linker_filter = c3d.LinkerFilterV3(
     linker_a="GTTGGATAAG",
     linker_b="GTTGGAATGT",
     n_threads=THREADS
@@ -525,7 +525,7 @@ linker_filter = rp.LinkerFilterV3(
 linker_filter.filter_fastq(R1, R2, "filtered", OUTPUT)
 
 # Step 2: Mapping (same as ChIA-PET)
-mapper = rp.PETMapper(GENOME, n_threads=THREADS, use_bwa_mem=True)
+mapper = c3d.PETMapper(GENOME, n_threads=THREADS, use_bwa_mem=True)
 mapper.map_linker_filtered_fastq(
     f"{OUTPUT}/filtered.1_1.R1.fastq",
     f"{OUTPUT}/filtered.1_1.R2.fastq",
@@ -533,11 +533,11 @@ mapper.map_linker_filtered_fastq(
 )
 
 # Step 3: HiChIP Purifying (different from ChIA-PET!)
-purifier = rp.HiChIPPurifier(restriction_file=RESTRICTION_SITES)
+purifier = c3d.HiChIPPurifier(restriction_file=RESTRICTION_SITES)
 purifier.purify(f"{OUTPUT}/mapped.bedpe", "purified", OUTPUT)
 
 # Step 4: Categorization (HiChIP mode - 1000bp cutoff)
-categorizer = rp.PETCategorizer(mode='hichip')
+categorizer = c3d.PETCategorizer(mode='hichip')
 categorizer.categorize(f"{OUTPUT}/purified.bedpe", "categorized", OUTPUT)
 
 # Steps 5-6: Same as ChIA-PET
@@ -580,19 +580,19 @@ categorizer.categorize(f"{OUTPUT}/purified.bedpe", "categorized", OUTPUT)
 
 # Hi-C Analysis
 
-Rowan-PET includes a complete **Hi-C** analysis pipeline with **modular classes** for each step.
+Chr3D includes a complete **Hi-C** analysis pipeline with **modular classes** for each step.
 
 ## Hi-C Available Classes
 
 | Class | Purpose | When to Use |
 |-------|---------|-------------|
-| `rp.FastqSplitter` | Split FASTQ files | Large datasets, parallel processing |
-| `rp.HiCAligner` | BWA MEM alignment | Just need alignment |
-| `rp.HiCSamProcessor` | SAM → sorted BAM | Just need BAM conversion |
-| `rp.HiCPairsProcessor` | pairtools processing | Just need pairs (parse/sort/dedup/filter) |
-| `rp.HiCMatrixGenerator` | cooler matrix | Just need .cool/.mcool |
-| `rp.HiCPipeline` | Complete pipeline | Run everything |
-| `rp.HiCQCAnalyzer` | QC analysis | Analyze QC metrics |
+| `c3d.FastqSplitter` | Split FASTQ files | Large datasets, parallel processing |
+| `c3d.HiCAligner` | BWA MEM alignment | Just need alignment |
+| `c3d.HiCSamProcessor` | SAM → sorted BAM | Just need BAM conversion |
+| `c3d.HiCPairsProcessor` | pairtools processing | Just need pairs (parse/sort/dedup/filter) |
+| `c3d.HiCMatrixGenerator` | cooler matrix | Just need .cool/.mcool |
+| `c3d.HiCPipeline` | Complete pipeline | Run everything |
+| `c3d.HiCQCAnalyzer` | QC analysis | Analyze QC metrics |
 
 ### Hi-C Dependencies
 
@@ -609,9 +609,9 @@ conda install -c bioconda bwa samtools pairtools cooler
 Run the entire Hi-C pipeline with one class:
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
-hic = rp.HiCPipeline(
+hic = c3d.HiCPipeline(
     genome_index="/path/to/hg38.fa",
     chrom_sizes="/path/to/hg38.chrom.sizes",
     threads=24
@@ -632,29 +632,29 @@ stats = hic.run(
 Use individual classes for more control:
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Step 0 (Optional): Split large FASTQ files
-splitter = rp.FastqSplitter(n_chunks=10)
+splitter = c3d.FastqSplitter(n_chunks=10)
 chunks = splitter.split("R1.fastq.gz", "R2.fastq.gz", "split_dir/")
 
 # Step 1: Alignment
-aligner = rp.HiCAligner("/path/to/hg38.fa", threads=24)
+aligner = c3d.HiCAligner("/path/to/hg38.fa", threads=24)
 aligner.align("R1.fastq.gz", "R2.fastq.gz", "aligned.sam")
 
 # Step 2: SAM/BAM processing
-processor = rp.HiCSamProcessor(threads=24)
+processor = c3d.HiCSamProcessor(threads=24)
 processor.process("aligned.sam", "sorted.bam")
 
 # Step 3: Pairs processing (individual pairtools steps)
-pairs = rp.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
+pairs = c3d.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
 pairs.parse("sorted.bam", "parsed.pairs.gz")
 pairs.sort("parsed.pairs.gz", "sorted.pairs.gz")
 pairs.dedup("sorted.pairs.gz", "dedup.pairs.gz")
 pairs.filter("dedup.pairs.gz", "filtered.pairs.gz")
 
 # Step 4: Contact matrix generation
-matrix = rp.HiCMatrixGenerator("/path/to/hg38.chrom.sizes", threads=24)
+matrix = c3d.HiCMatrixGenerator("/path/to/hg38.chrom.sizes", threads=24)
 matrix.create("filtered.pairs.gz", "sample.cool", resolution=1000)
 matrix.balance("sample.cool")
 matrix.zoomify("sample.cool", "sample.mcool")
@@ -667,9 +667,9 @@ matrix.zoomify("sample.cool", "sample.mcool")
 The `HiCPairsProcessor` exposes each pairtools step individually:
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
-pairs = rp.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
+pairs = c3d.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
 
 # Run just deduplication on existing pairs
 pairs.dedup("sorted.pairs.gz", "dedup.pairs.gz", stats_file="dedup.stats")
@@ -709,10 +709,11 @@ pairs.process_all("sorted.bam", "output_dir/", prefix="sample")
 
 ## Citation
 
-If you use Rowan-PET in your research, please cite:
+If you use Chr3D in your research, please cite:
 
 ```
-Rowan-PET: A Python Pipeline for ChIA-PET, HiChIP, and Hi-C Analysis
+Chr3D: A Comprehensive Python Framework for Chromatin Interactions Analysis
+https://github.com/rudrajoshi2481/Chr3D
 ```
 
 ## License
@@ -726,4 +727,3 @@ MIT License
 - Mumbach et al. (2016) HiChIP: efficient and sensitive analysis of protein-directed genome architecture
 - Rao et al. (2014) A 3D map of the human genome at kilobase resolution
 - 4DN Hi-C Processing Pipeline
-# Chr3D

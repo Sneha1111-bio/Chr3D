@@ -1,5 +1,5 @@
 """
-Rowan-PET: ChIA-PET, HiChIP, and Hi-C Analysis Pipeline
+Chr3D: A Comprehensive Python Framework for Chromatin Interactions Analysis
 
 A comprehensive Python pipeline for analyzing chromatin interaction data
 from ChIA-PET, HiChIP, and Hi-C experiments.
@@ -28,7 +28,7 @@ Modules:
 """
 
 __version__ = "3.2.0"
-__author__ = "Rowan-PET Development Team"
+__author__ = "Chr3D Development Team"
 
 # ============================================================================
 # ChIA-PET / HiChIP Modules

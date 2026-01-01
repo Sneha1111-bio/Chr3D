@@ -1,6 +1,6 @@
-# Rowan-PET API Reference
+# Chr3D API Reference
 
-Complete API documentation for all Rowan-PET classes and methods.
+Complete API documentation for all Chr3D classes and methods.
 
 **Version: 3.2.0**
 
@@ -92,9 +92,9 @@ FASTQ → [1] HiCAligner → [2] HiCSamProcessor → [3] HiCPairsProcessor → [
 High-performance linker filtering with parasail SIMD acceleration.
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
-linker_filter = rp.LinkerFilterV3(
+linker_filter = c3d.LinkerFilterV3(
     linker_a: str,                    # Linker A sequence (required)
     linker_b: str,                    # Linker B sequence (required)
     min_score_ratio: float = 0.7,     # Min alignment score ratio
@@ -120,7 +120,7 @@ linker_filter = rp.LinkerFilterV3(
 Genomic mapping with BWA (MEM or ALN mode).
 
 ```python
-mapper = rp.PETMapper(
+mapper = c3d.PETMapper(
     genome_index: str,                # BWA-indexed genome (required)
     n_threads: int = 1,               # Number of threads
     use_bwa_mem: bool = True,         # True=BWA-MEM, False=BWA-ALN
@@ -143,7 +143,7 @@ mapper = rp.PETMapper(
 ChIA-PET deduplication and PET merging.
 
 ```python
-purifier = rp.ChIAPETPurifier(
+purifier = c3d.ChIAPETPurifier(
     merge_distance: int = 2,          # Max bp distance to merge
     min_mapq: int = 30                # Minimum mapping quality
 )
@@ -176,7 +176,7 @@ HiChIP same-fragment PET removal.
 > **Why this step?** HiChIP uses biotin-dATP fill-in at restriction sites. Same-fragment PETs result from self-ligation artifacts where both ends of a DNA fragment ligate to each other instead of forming inter-fragment contacts. These must be removed for accurate interaction calling. (Mumbach et al., 2016)
 
 ```python
-purifier = rp.HiChIPPurifier(
+purifier = c3d.HiChIPPurifier(
     restriction_file: str,            # Restriction sites BED (required)
     min_insert_size: int = 1          # Min fragment skip distance
 )
@@ -197,7 +197,7 @@ purifier = rp.HiChIPPurifier(
 PET classification into iPET, sPET, and oPET.
 
 ```python
-categorizer = rp.PETCategorizer(
+categorizer = c3d.PETCategorizer(
     mode: str = 'chiapet',            # 'chiapet' or 'hichip'
     self_ligation_cutoff: int = None  # None = use mode default
 )
@@ -222,7 +222,7 @@ categorizer = rp.PETCategorizer(
 Peak calling with MACS3.
 
 ```python
-peak_caller = rp.PeakCaller(
+peak_caller = c3d.PeakCaller(
     genome_size: str = 'hs',          # 'hs', 'mm', or integer
     qvalue_cutoff: float = 0.05,      # Q-value threshold
     keep_dup: str = '1',              # '1' or 'all'
@@ -252,7 +252,7 @@ Loop calling consists of three sub-steps using three classes.
 Pre-clustering with tag extension for loop calling.
 
 ```python
-pre_clusterer = rp.PreClusterer(
+pre_clusterer = c3d.PreClusterer(
     extension_length: int = 500,      # Tag extension in bp
     chrom_sizes_file: str = None      # Chromosome sizes file
 )
@@ -271,7 +271,7 @@ pre_clusterer = rp.PreClusterer(
 Merge overlapping anchor clusters.
 
 ```python
-anchor_clusterer = rp.AnchorClusterer()
+anchor_clusterer = c3d.AnchorClusterer()
 ```
 
 **Methods:**
@@ -287,7 +287,7 @@ anchor_clusterer = rp.AnchorClusterer()
 FDR-corrected loop significance testing.
 
 ```python
-stat_sig = rp.StatisticalSignificance(
+stat_sig = c3d.StatisticalSignificance(
     ipet_count_threshold: int = 2,    # Min iPET count per loop
     pvalue_cutoff: float = 0.05,      # FDR threshold
     extension_length: int = 500       # Tag extension for counting
@@ -313,7 +313,7 @@ The Hi-C module provides **modular classes** for each processing step. You can u
 Split large FASTQ files into chunks for parallel processing.
 
 ```python
-splitter = rp.FastqSplitter(
+splitter = c3d.FastqSplitter(
     n_chunks: int = 10,               # Number of chunks to create
     reads_per_chunk: int = None       # Reads per chunk (overrides n_chunks)
 )
@@ -327,7 +327,7 @@ splitter = rp.FastqSplitter(
 
 **Example:**
 ```python
-splitter = rp.FastqSplitter(n_chunks=10)
+splitter = c3d.FastqSplitter(n_chunks=10)
 chunks = splitter.split("R1.fastq.gz", "R2.fastq.gz", "split_dir/")
 # Returns: [("chunk_000_R1.fastq", "chunk_000_R2.fastq"), ...]
 ```
@@ -339,7 +339,7 @@ chunks = splitter.split("R1.fastq.gz", "R2.fastq.gz", "split_dir/")
 BWA MEM alignment with Hi-C specific parameters (-SP5M).
 
 ```python
-aligner = rp.HiCAligner(
+aligner = c3d.HiCAligner(
     genome_index: str,                # BWA-indexed genome (required)
     threads: int = 1                  # Number of threads
 )
@@ -353,7 +353,7 @@ aligner = rp.HiCAligner(
 
 **Example:**
 ```python
-aligner = rp.HiCAligner("/path/to/hg38.fa", threads=24)
+aligner = c3d.HiCAligner("/path/to/hg38.fa", threads=24)
 stats = aligner.align("R1.fastq.gz", "R2.fastq.gz", "aligned.sam")
 ```
 
@@ -364,7 +364,7 @@ stats = aligner.align("R1.fastq.gz", "R2.fastq.gz", "aligned.sam")
 SAM to BAM conversion and sorting (required for pairtools).
 
 ```python
-processor = rp.HiCSamProcessor(
+processor = c3d.HiCSamProcessor(
     threads: int = 1                  # Number of threads
 )
 ```
@@ -377,7 +377,7 @@ processor = rp.HiCSamProcessor(
 
 **Example:**
 ```python
-processor = rp.HiCSamProcessor(threads=24)
+processor = c3d.HiCSamProcessor(threads=24)
 stats = processor.process("aligned.sam", "sorted.bam")
 ```
 
@@ -388,7 +388,7 @@ stats = processor.process("aligned.sam", "sorted.bam")
 pairtools processing with individual methods for each step.
 
 ```python
-pairs = rp.HiCPairsProcessor(
+pairs = c3d.HiCPairsProcessor(
     chrom_sizes: str,                 # Chromosome sizes file (required)
     assembly: str = 'hg38',           # Genome assembly name
     threads: int = 1                  # Number of threads
@@ -407,7 +407,7 @@ pairs = rp.HiCPairsProcessor(
 
 **Example - Individual Steps:**
 ```python
-pairs = rp.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
+pairs = c3d.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
 
 # Run each step individually
 pairs.parse("sorted.bam", "parsed.pairs.gz")
@@ -418,7 +418,7 @@ pairs.filter("dedup.pairs.gz", "filtered.pairs.gz", pair_types=['UU', 'UR', 'RU'
 
 **Example - All Steps:**
 ```python
-pairs = rp.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
+pairs = c3d.HiCPairsProcessor("/path/to/hg38.chrom.sizes", threads=24)
 stats = pairs.process_all("sorted.bam", "output_dir/", prefix="sample")
 # Creates: sample.sorted.pairs.gz, sample.dedup.pairs.gz, sample.filtered.pairs.gz
 ```
@@ -430,7 +430,7 @@ stats = pairs.process_all("sorted.bam", "output_dir/", prefix="sample")
 Contact matrix generation using cooler.
 
 ```python
-matrix = rp.HiCMatrixGenerator(
+matrix = c3d.HiCMatrixGenerator(
     chrom_sizes: str,                 # Chromosome sizes file (required)
     assembly: str = 'hg38',           # Genome assembly name
     threads: int = 1                  # Number of threads
@@ -447,7 +447,7 @@ matrix = rp.HiCMatrixGenerator(
 
 **Example:**
 ```python
-matrix = rp.HiCMatrixGenerator("/path/to/hg38.chrom.sizes", threads=24)
+matrix = c3d.HiCMatrixGenerator("/path/to/hg38.chrom.sizes", threads=24)
 
 # Create matrix at 1kb resolution
 matrix.create("filtered.pairs.gz", "sample.cool", resolution=1000)
@@ -467,7 +467,7 @@ matrix.zoomify("sample.cool", "sample.mcool",
 Complete Hi-C pipeline orchestrator (combines all steps).
 
 ```python
-hic = rp.HiCPipeline(
+hic = c3d.HiCPipeline(
     genome_index: str,                # BWA-indexed genome (required)
     chrom_sizes: str,                 # Chromosome sizes file (required)
     threads: int = 1,                 # Number of threads
@@ -490,7 +490,7 @@ hic = rp.HiCPipeline(
 
 **Example - Complete Pipeline:**
 ```python
-hic = rp.HiCPipeline(
+hic = c3d.HiCPipeline(
     genome_index="/path/to/hg38.fa",
     chrom_sizes="/path/to/hg38.chrom.sizes",
     threads=24
@@ -505,7 +505,7 @@ stats = hic.run("R1.fastq.gz", "R2.fastq.gz", "results/", sample_id="sample1")
 Hi-C quality control analysis.
 
 ```python
-qc = rp.HiCQCAnalyzer()
+qc = c3d.HiCQCAnalyzer()
 ```
 
 **Methods:**
@@ -518,7 +518,7 @@ qc = rp.HiCQCAnalyzer()
 
 **Example:**
 ```python
-qc = rp.HiCQCAnalyzer()
+qc = c3d.HiCQCAnalyzer()
 stats = qc.analyze("results/qc", "results/summary")
 ```
 
@@ -531,7 +531,7 @@ stats = qc.analyze("results/qc", "results/summary")
 Generate restriction fragments from genome.
 
 ```python
-generator = rp.RestrictionSiteGenerator(
+generator = c3d.RestrictionSiteGenerator(
     enzyme: str,                      # Enzyme name (e.g., 'MboI')
     recognition_site: str             # Recognition sequence (e.g., 'GATC')
 )
@@ -553,7 +553,7 @@ generator = rp.RestrictionSiteGenerator(
 
 ```bash
 # Run complete ChIA-PET pipeline (with linker filtering)
-rowan-pet run-chiapet \
+chr3d run-chiapet \
     --fastq1 sample_R1.fastq.gz \
     --fastq2 sample_R2.fastq.gz \
     --genome-idx /path/to/hg38.fa \
@@ -569,7 +569,7 @@ rowan-pet run-chiapet \
 
 ```bash
 # Run complete HiChIP pipeline (NO linker filtering)
-rowan-pet run-hichip \
+chr3d run-hichip \
     --fastq1 sample_R1.fastq.gz \
     --fastq2 sample_R2.fastq.gz \
     --genome-idx /path/to/hg38.fa \
@@ -723,6 +723,6 @@ cleanup_chiapet("results/", keep_bam=False)
 ## Version
 
 ```python
-import rowan_pet as rp
-print(rp.__version__)  # 3.2.0
+import chr3d as c3d
+print(c3d.__version__)  # 3.2.0
 ```

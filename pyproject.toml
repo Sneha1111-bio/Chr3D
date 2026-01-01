@@ -3,15 +3,15 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rowan-pet"
-version = "2.0.0"
-description = "ChIA-PET and HiChIP Analysis Pipeline"
+name = "chr3d"
+version = "3.2.0"
+description = "Chr3D: A Comprehensive Python Framework for Chromatin Interactions Analysis"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Rowan-PET Development Team", email = "rowan-pet@example.com"}
+    {name = "Chr3D Development Team"}
 ]
-keywords = ["ChIA-PET", "HiChIP", "chromatin", "genomics", "bioinformatics", "3D-genome"]
+keywords = ["ChIA-PET", "HiChIP", "Hi-C", "chromatin", "genomics", "bioinformatics", "3D-genome", "chromatin-interactions"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -43,18 +43,17 @@ dev = [
 ]
 
 [project.scripts]
-rowan-pet = "rowan_pet.cli:main"
+chr3d = "chr3d.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/rowan-pet/rowan-pet"
-Documentation = "https://rowan-pet.readthedocs.io"
-Repository = "https://github.com/rowan-pet/rowan-pet"
+Homepage = "https://github.com/rudrajoshi2481/Chr3D"
+Repository = "https://github.com/rudrajoshi2481/Chr3D"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-rowan_pet = ["*.json", "*.yaml"]
+chr3d = ["*.json", "*.yaml"]
 
 [tool.black]
 line-length = 100
@@ -63,4 +62,4 @@ target-version = ['py39', 'py310', 'py311', 'py312']
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=rowan_pet"
+addopts = "-v --cov=chr3d"

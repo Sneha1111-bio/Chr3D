@@ -4,8 +4,8 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/rowan-pet/rowan-pet.git
-cd rowan-pet
+git clone https://github.com/rudrajoshi2481/Chr3D.git
+cd Chr3D
 
 # Install package
 pip install -e .
@@ -45,10 +45,10 @@ Create a complete environment with all dependencies:
 
 ```bash
 # Create environment
-conda create -n rowan-pet python=3.10
+conda create -n chr3d python=3.10
 
 # Activate
-conda activate rowan-pet
+conda activate chr3d
 
 # Install bioconda tools
 conda install -c bioconda bwa samtools macs3 pairtools cooler
@@ -56,40 +56,40 @@ conda install -c bioconda bwa samtools macs3 pairtools cooler
 # Install Python dependencies
 pip install parasail pandas scipy numpy tqdm biopython
 
-# Install rowan-pet
+# Install chr3d
 pip install -e .
 ```
 
 ## Verify Installation
 
 ```python
-import rowan_pet as rp
+import chr3d as c3d
 
 # Check version
-print(f"Rowan-PET version: {rp.__version__}")
+print(f"Chr3D version: {c3d.__version__}")
 
 # List available classes
 print("Available classes:")
-for name in rp.__all__:
-    print(f"  - rp.{name}")
+for name in c3d.__all__:
+    print(f"  - c3d.{name}")
 ```
 
 Expected output:
 ```
-Rowan-PET version: 3.1.0
+Chr3D version: 3.2.0
 Available classes:
-  - rp.LinkerFilterV3
-  - rp.PETMapper
-  - rp.ChIAPETPurifier
-  - rp.HiChIPPurifier
-  - rp.PETCategorizer
-  - rp.PeakCaller
-  - rp.PreClusterer
-  - rp.AnchorClusterer
-  - rp.StatisticalSignificance
-  - rp.RestrictionSiteGenerator
-  - rp.BulkHiCPipeline
-  - rp.HiCQCAnalyzer
+  - c3d.LinkerFilterV3
+  - c3d.PETMapper
+  - c3d.ChIAPETPurifier
+  - c3d.HiChIPPurifier
+  - c3d.PETCategorizer
+  - c3d.PeakCaller
+  - c3d.PreClusterer
+  - c3d.AnchorClusterer
+  - c3d.StatisticalSignificance
+  - c3d.RestrictionSiteGenerator
+  - c3d.HiCPipeline
+  - c3d.HiCQCAnalyzer
 ```
 
 ## Verify External Tools

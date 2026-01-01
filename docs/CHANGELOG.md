@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Rowan-PET will be documented in this file.
+All notable changes to Chr3D will be documented in this file.
 
 ## [3.1.0] - 2024-12-16
 
@@ -11,7 +11,7 @@ All notable changes to Rowan-PET will be documented in this file.
   - Pairs processing with pairtools (parse, sort, dedup, filter)
   - Contact matrix generation with cooler (balance, zoomify)
 - **Hi-C QC Analyzer** (`HiCQCAnalyzer`) - Parse and summarize Hi-C QC metrics
-- Integrated rowan-hic functionality into rowan-pet package
+- Integrated Hi-C functionality into Chr3D package
 
 ### Changed
 - Updated version to 3.1.0
