@@ -582,7 +582,7 @@ chr3d run-hichip \
 
 ```bash
 # Run complete Hi-C pipeline
-rowan-pet run-hic \
+chr3d run-hic \
     --fastq1 sample_R1.fastq.gz \
     --fastq2 sample_R2.fastq.gz \
     --genome-idx /path/to/hg38.fa \

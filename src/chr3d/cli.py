@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Rowan-PET Command Line Interface
+Chr3D Command Line Interface
 
 Provides command-line access to all pipeline steps for ChIA-PET and HiChIP analysis.
 
 Usage:
-    rowan-pet <command> [options]
+    chr3d <command> [options]
 
 Commands:
     run             Run the complete pipeline
@@ -31,7 +31,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger('rowan-pet')
+logger = logging.getLogger('chr3d')
 
 
 def setup_logging(verbose: bool = False, log_file: str = None):
@@ -331,14 +331,87 @@ def cmd_generate_sites(args):
 def cmd_run(args):
     """Run the complete pipeline."""
     logger.info("=" * 70)
-    logger.info("ROWAN-PET COMPLETE PIPELINE")
+    logger.info("CHR3D COMPLETE PIPELINE")
     logger.info("=" * 70)
-    logger.info(f"Mode: {args.mode}")
+    logger.info(f"Mode: {args.mode.upper()}")
     logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Keep intermediates: {args.keep_intermediates}")
+    
+    # Validate mode-specific requirements
+    if args.mode in ['chiapet', 'hichip'] and not args.linker_a:
+        logger.error(f"--linker-a is required for {args.mode} mode")
+        return 1
+    if args.mode == 'hichip' and not args.restriction_sites:
+        logger.error("--restriction-sites is required for hichip mode")
+        return 1
+    if args.mode == 'hic' and not args.chrom_sizes:
+        logger.error("--chrom-sizes is required for hic mode")
+        return 1
     
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Route to appropriate pipeline
+    if args.mode == 'hic':
+        return _run_hic_pipeline(args, output_dir)
+    else:
+        return _run_chiapet_hichip_pipeline(args, output_dir)
+
+
+def _run_hic_pipeline(args, output_dir: Path):
+    """Run Hi-C analysis pipeline."""
+    from .bulk_hic import HiCPipeline
+    
+    logger.info("\n" + "=" * 70)
+    logger.info("HI-C PIPELINE")
+    logger.info("=" * 70)
+    
+    try:
+        # Parse resolutions
+        resolutions = [int(r) for r in args.resolution.split(',')]
+        
+        # Initialize Hi-C pipeline
+        hic_pipeline = HiCPipeline(
+            genome_index=args.genome_index,
+            chrom_sizes=args.chrom_sizes,
+            threads=args.threads,
+            assembly=args.assembly,
+            resolutions=resolutions
+        )
+        
+        # Run pipeline
+        stats = hic_pipeline.run(
+            fastq1=args.fastq_r1,
+            fastq2=args.fastq_r2,
+            output_dir=str(output_dir),
+            sample_id='sample',
+            keep_intermediates=args.keep_intermediates
+        )
+        
+        logger.info("\n" + "=" * 70)
+        logger.info("HI-C PIPELINE COMPLETE!")
+        logger.info("=" * 70)
+        logger.info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"\nFinal outputs:")
+        logger.info(f"  Filtered pairs: {output_dir / 'sample.filtered.pairs.gz'}")
+        logger.info(f"  Contact matrix: {output_dir / 'sample.mcool'}")
+        logger.info("=" * 70)
+        
+        return 0
+        
+    except Exception as e:
+        logger.error(f"Hi-C pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def _run_chiapet_hichip_pipeline(args, output_dir: Path):
+    """Run ChIA-PET or HiChIP analysis pipeline."""
+    logger.info("\n" + "=" * 70)
+    logger.info(f"{args.mode.upper()} PIPELINE")
+    logger.info("=" * 70)
     
     # Set up step-specific output directories
     step_dirs = {
@@ -497,9 +570,57 @@ def cmd_run(args):
             str(step_dirs['step6'] / 'loops')
         )
         
+        # Cleanup intermediate files if requested
+        if not args.keep_intermediates:
+            logger.info("\n" + "=" * 70)
+            logger.info("CLEANING UP INTERMEDIATE FILES")
+            logger.info("=" * 70)
+            
+            import shutil
+            cleanup_patterns = []
+            
+            # Step 1: Linker filtered files (keep only final outputs)
+            if step_dirs['step1'].exists():
+                for f in step_dirs['step1'].glob('*.fastq'):
+                    cleanup_patterns.append(f)
+                logger.info(f"  Removing linker-filtered FASTQ files...")
+            
+            # Step 2: SAM files, unsorted BAM files
+            if step_dirs['step2'].exists():
+                for pattern in ['*.sam', '*_unsorted.bam', '*.sai']:
+                    for f in step_dirs['step2'].glob(pattern):
+                        cleanup_patterns.append(f)
+                logger.info(f"  Removing SAM/BAM intermediate files...")
+            
+            # Step 3: Intermediate purification files
+            if step_dirs['step3'].exists():
+                for f in step_dirs['step3'].glob('*.sameres.bedpe'):
+                    cleanup_patterns.append(f)
+                logger.info(f"  Removing purification intermediates...")
+            
+            # Step 4: Keep categorized files (iPET, sPET, oPET)
+            # Step 5: Keep peak files
+            # Step 6: Keep only final filtered loops, remove intermediates
+            if step_dirs['step6'].exists():
+                for pattern in ['*.pre_cluster', '*.pre_cluster.sorted', 'clusters.txt']:
+                    for f in step_dirs['step6'].glob(pattern):
+                        cleanup_patterns.append(f)
+                logger.info(f"  Removing loop calling intermediates...")
+            
+            # Remove files
+            for f in cleanup_patterns:
+                try:
+                    if f.is_file():
+                        f.unlink()
+                except Exception as e:
+                    logger.warning(f"  Could not remove {f}: {e}")
+            
+            logger.info(f"  Cleaned up {len(cleanup_patterns)} intermediate files")
+            logger.info("=" * 70)
+        
         # Final summary
         logger.info("\n" + "=" * 70)
-        logger.info("PIPELINE COMPLETE!")
+        logger.info(f"{args.mode.upper()} PIPELINE COMPLETE!")
         logger.info("=" * 70)
         logger.info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"\nFinal outputs:")
@@ -513,12 +634,18 @@ def cmd_run(args):
         logger.info(f"  sPETs: {cat_stats['spet']['count']:,} ({cat_stats['spet']['percentage']:.1f}%)")
         logger.info(f"  Peaks: {peak_stats.get('num_peaks', 0):,}")
         logger.info(f"  Significant loops: {sig_stats['num_significant_loops']:,}")
+        
+        if args.keep_intermediates:
+            logger.info(f"\nIntermediate files kept in:")
+            for step_name, step_dir in step_dirs.items():
+                logger.info(f"  {step_name}: {step_dir}")
+        
         logger.info("=" * 70)
         
         return 0
         
     except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
+        logger.error(f"{args.mode.upper()} pipeline failed: {e}")
         import traceback
         traceback.print_exc()
         return 1
@@ -527,154 +654,116 @@ def cmd_run(args):
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
-        prog='rowan-pet',
-        description='Rowan-PET: ChIA-PET and HiChIP Analysis Pipeline',
+        prog='chr3d',
+        description='Chr3D: Complete Pipeline for ChIA-PET, HiChIP, and Hi-C Analysis',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run complete ChIA-PET pipeline
-  rowan-pet run --mode chiapet --fastq-r1 R1.fq.gz --fastq-r2 R2.fq.gz \\
-      --genome-index hg38.fa --linker-a GTTGGATAAG --output-dir results/
+  # ChIA-PET Analysis (complete pipeline)
+  chr3d run --mode chiapet \\
+      --fastq-r1 sample_R1.fastq.gz \\
+      --fastq-r2 sample_R2.fastq.gz \\
+      --genome-index /path/to/hg38.fa \\
+      --linker-a GTTGGATAAG \\
+      --linker-b GTTGGAATGT \\
+      --output-dir results/ \\
+      --threads 24 \\
+      --keep-intermediates
 
-  # Run individual steps
-  rowan-pet filter-linker --fastq-r1 R1.fq.gz --fastq-r2 R2.fq.gz \\
-      --linker-a GTTGGATAAG --output-prefix filtered
+  # HiChIP Analysis (complete pipeline)
+  chr3d run --mode hichip \\
+      --fastq-r1 sample_R1.fastq.gz \\
+      --fastq-r2 sample_R2.fastq.gz \\
+      --genome-index /path/to/hg38.fa \\
+      --linker-a GTTGGATAAG \\
+      --restriction-sites /path/to/MboI_sites.bed \\
+      --output-dir results/ \\
+      --threads 24 \\
+      --keep-intermediates
 
-  rowan-pet call-loops --ipet-file categorized.ipet --output-prefix loops
+  # Hi-C Analysis (complete pipeline)
+  chr3d run --mode hic \\
+      --fastq-r1 sample_R1.fastq.gz \\
+      --fastq-r2 sample_R2.fastq.gz \\
+      --genome-index /path/to/hg38.fa \\
+      --chrom-sizes /path/to/hg38.chrom.sizes \\
+      --output-dir results/ \\
+      --threads 24 \\
+      --resolution 1000,5000,10000 \\
+      --keep-intermediates
 
-For more information, see: https://github.com/rowan-pet/rowan-pet
+Note: Use --keep-intermediates to retain all intermediate files (SAM, BAM, etc.)
+      By default, intermediate files are removed to save disk space.
+
+For more information: https://github.com/rudrajoshi2481/Chr3D
         """
     )
     
-    parser.add_argument('--version', action='version', version='%(prog)s 2.0.0')
+    parser.add_argument('--version', action='version', version='%(prog)s 3.2.0')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     parser.add_argument('--log-file', help='Log file path')
     
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
     
     # =========================================================================
-    # run - Complete pipeline
+    # run - Complete pipeline (MAIN COMMAND)
     # =========================================================================
     run_parser = subparsers.add_parser('run', help='Run complete pipeline')
-    run_parser.add_argument('--mode', choices=['chiapet', 'hichip'], default='chiapet',
-                           help='Analysis mode (default: chiapet)')
+    run_parser.add_argument('--mode', choices=['chiapet', 'hichip', 'hic'], required=True,
+                           help='Analysis mode: chiapet, hichip, or hic')
+    # Required inputs
     run_parser.add_argument('--fastq-r1', required=True, help='Input R1 FASTQ file')
     run_parser.add_argument('--fastq-r2', required=True, help='Input R2 FASTQ file')
-    run_parser.add_argument('--genome-index', required=True, help='BWA genome index')
-    run_parser.add_argument('--linker-a', help='Linker A sequence')
-    run_parser.add_argument('--linker-b', help='Linker B sequence (optional)')
-    run_parser.add_argument('--restriction-sites', help='Restriction sites BED (HiChIP)')
+    run_parser.add_argument('--genome-index', required=True, help='BWA-indexed genome FASTA')
     run_parser.add_argument('--output-dir', required=True, help='Output directory')
-    run_parser.add_argument('--threads', type=int, default=4, help='Number of threads')
-    run_parser.add_argument('--genome-size', default='hs', help='Genome size for MACS3')
-    run_parser.add_argument('--mapping-quality', type=int, default=30, help='Min mapping quality')
+    
+    # Mode-specific required inputs
+    run_parser.add_argument('--linker-a', help='Linker A sequence (required for chiapet/hichip)')
+    run_parser.add_argument('--linker-b', help='Linker B sequence (optional for chiapet/hichip)')
+    run_parser.add_argument('--restriction-sites', help='Restriction sites BED file (required for hichip)')
+    run_parser.add_argument('--chrom-sizes', help='Chromosome sizes file (required for hic)')
+    
+    # Performance options
+    run_parser.add_argument('--threads', type=int, default=24, help='Number of threads (default: 24)')
+    run_parser.add_argument('--use-bwa-mem', action='store_true', help='Use BWA-MEM instead of BWA-ALN')
+    
+    # ChIA-PET/HiChIP parameters
+    run_parser.add_argument('--genome-size', default='hs', help='Genome size for MACS3 (default: hs)')
+    run_parser.add_argument('--mapping-quality', type=int, default=30, help='Min mapping quality (default: 30)')
     run_parser.add_argument('--self-ligation-cutoff', type=int, default=8000,
-                           help='Self-ligation cutoff (bp)')
+                           help='Self-ligation cutoff in bp (default: 8000)')
     run_parser.add_argument('--extension-length', type=int, default=500,
-                           help='Tag extension length (bp)')
+                           help='Tag extension length in bp (default: 500)')
     run_parser.add_argument('--ipet-threshold', type=int, default=2,
-                           help='Min iPET count for loops')
-    run_parser.add_argument('--fdr-cutoff', type=float, default=0.05, help='FDR cutoff')
-    run_parser.add_argument('--use-bwa-mem', action='store_true', help='Use BWA-MEM')
+                           help='Min iPET count for loops (default: 2)')
+    run_parser.add_argument('--fdr-cutoff', type=float, default=0.05, help='FDR cutoff (default: 0.05)')
+    
+    # Hi-C parameters
+    run_parser.add_argument('--resolution', default='1000,5000,10000',
+                           help='Resolutions for Hi-C matrices (comma-separated, default: 1000,5000,10000)')
+    run_parser.add_argument('--assembly', default='hg38', help='Genome assembly name (default: hg38)')
+    
+    # Output control
+    run_parser.add_argument('--keep-intermediates', action='store_true',
+                           help='Keep intermediate files (SAM, unsorted BAM, etc.)')
+    run_parser.add_argument('--keep-sam', action='store_true', help='Keep SAM files')
+    run_parser.add_argument('--no-dedup', action='store_true', help='Skip PCR duplicate removal')
+    
     run_parser.set_defaults(func=cmd_run)
     
     # =========================================================================
-    # filter-linker - Step 1
+    # generate-sites - Utility command for generating restriction sites
     # =========================================================================
-    filter_parser = subparsers.add_parser('filter-linker', help='Step 1: Filter linker sequences')
-    filter_parser.add_argument('--fastq-r1', required=True, help='Input R1 FASTQ file')
-    filter_parser.add_argument('--fastq-r2', required=True, help='Input R2 FASTQ file')
-    filter_parser.add_argument('--linker-a', required=True, help='Linker A sequence')
-    filter_parser.add_argument('--linker-b', help='Linker B sequence (optional)')
-    filter_parser.add_argument('--output-prefix', required=True, help='Output prefix')
-    filter_parser.add_argument('--output-dir', help='Output directory')
-    filter_parser.add_argument('--min-score', type=int, default=14, help='Min alignment score')
-    filter_parser.add_argument('--min-tag-length', type=int, default=18, help='Min tag length')
-    filter_parser.add_argument('--max-tag-length', type=int, default=1000, help='Max tag length')
-    filter_parser.add_argument('--threads', type=int, default=4, help='Number of threads')
-    filter_parser.add_argument('--compress', action='store_true', help='Compress output')
-    filter_parser.set_defaults(func=cmd_filter_linker)
-    
-    # =========================================================================
-    # map - Step 2
-    # =========================================================================
-    map_parser = subparsers.add_parser('map', help='Step 2: Map reads to genome')
-    map_parser.add_argument('--fastq-r1', required=True, help='Input R1 FASTQ file')
-    map_parser.add_argument('--fastq-r2', required=True, help='Input R2 FASTQ file')
-    map_parser.add_argument('--genome-index', required=True, help='BWA genome index')
-    map_parser.add_argument('--output-prefix', required=True, help='Output prefix')
-    map_parser.add_argument('--output-dir', help='Output directory')
-    map_parser.add_argument('--mapping-quality', type=int, default=30, help='Min mapping quality')
-    map_parser.add_argument('--threads', type=int, default=4, help='Number of threads')
-    map_parser.add_argument('--use-bwa-mem', action='store_true', help='Use BWA-MEM')
-    map_parser.add_argument('--self-ligation-cutoff', type=int, default=8000,
-                           help='Self-ligation cutoff')
-    map_parser.add_argument('--keep-sam', action='store_true', help='Keep SAM files')
-    map_parser.add_argument('--no-dedup', action='store_true', help='Skip deduplication')
-    map_parser.set_defaults(func=cmd_map)
-    
-    # =========================================================================
-    # purify - Step 3
-    # =========================================================================
-    purify_parser = subparsers.add_parser('purify', help='Step 3: Purify PETs')
-    purify_parser.add_argument('--bedpe', required=True, help='Input BEDPE file')
-    purify_parser.add_argument('--output-prefix', required=True, help='Output prefix')
-    purify_parser.add_argument('--mode', choices=['chiapet', 'hichip'], default='chiapet',
-                              help='Analysis mode')
-    purify_parser.add_argument('--merge-distance', type=int, default=2,
-                              help='Merge distance (ChIA-PET)')
-    purify_parser.add_argument('--restriction-sites', help='Restriction sites BED (HiChIP)')
-    purify_parser.add_argument('--min-insert-size', type=int, default=1,
-                              help='Min insert size (HiChIP)')
-    purify_parser.set_defaults(func=cmd_purify)
-    
-    # =========================================================================
-    # categorize - Step 4
-    # =========================================================================
-    cat_parser = subparsers.add_parser('categorize', help='Step 4: Categorize PETs')
-    cat_parser.add_argument('--bedpe', required=True, help='Input BEDPE file')
-    cat_parser.add_argument('--output-prefix', required=True, help='Output prefix')
-    cat_parser.add_argument('--cutoff', type=int, default=8000, help='Self-ligation cutoff (bp)')
-    cat_parser.add_argument('--mode', choices=['chiapet', 'hichip'], default='chiapet',
-                           help='Analysis mode')
-    cat_parser.set_defaults(func=cmd_categorize)
-    
-    # =========================================================================
-    # call-peaks - Step 5
-    # =========================================================================
-    peak_parser = subparsers.add_parser('call-peaks', help='Step 5: Call peaks')
-    peak_parser.add_argument('--input', required=True, help='Input file (sPET or BAM)')
-    peak_parser.add_argument('--output-prefix', required=True, help='Output prefix')
-    peak_parser.add_argument('--genome-size', '-g', default='hs', help='Genome size')
-    peak_parser.add_argument('--qvalue', '-q', type=float, default=0.05, help='Q-value cutoff')
-    peak_parser.add_argument('--keep-dup', default='all', help='Duplicate handling')
-    peak_parser.add_argument('--no-model', action='store_true', help='Skip model building')
-    peak_parser.add_argument('--format', choices=['auto', 'BAM', 'BED', 'BEDPE'], default='auto',
-                            help='Input format')
-    peak_parser.add_argument('--conda-env', default='rowan-hic', help='Conda environment')
-    peak_parser.add_argument('--no-conda', action='store_true', help='Skip conda')
-    peak_parser.set_defaults(func=cmd_call_peaks)
-    
-    # =========================================================================
-    # call-loops - Step 6
-    # =========================================================================
-    loop_parser = subparsers.add_parser('call-loops', help='Step 6: Call loops')
-    loop_parser.add_argument('--ipet-file', required=True, help='Input iPET file')
-    loop_parser.add_argument('--output-prefix', required=True, help='Output prefix')
-    loop_parser.add_argument('--extension', type=int, default=500, help='Extension length (bp)')
-    loop_parser.add_argument('--ipet-threshold', type=int, default=2, help='Min iPET count')
-    loop_parser.add_argument('--fdr-cutoff', type=float, default=0.05, help='FDR cutoff')
-    loop_parser.set_defaults(func=cmd_call_loops)
-    
-    # =========================================================================
-    # generate-sites - Utility
-    # =========================================================================
-    sites_parser = subparsers.add_parser('generate-sites', help='Generate restriction sites')
+    sites_parser = subparsers.add_parser('generate-sites', 
+                                         help='Generate restriction fragment sites from genome')
     sites_parser.add_argument('--genome', required=True, help='Genome FASTA file')
-    sites_parser.add_argument('--enzyme', required=True, help='Enzyme name or site')
+    sites_parser.add_argument('--enzyme', required=True, 
+                             help='Enzyme name (e.g., MboI, HindIII) or recognition site (e.g., GATC)')
     sites_parser.add_argument('--output', required=True, help='Output BED file')
-    sites_parser.add_argument('--min-size', type=int, default=20, help='Min fragment size')
-    sites_parser.add_argument('--max-size', type=int, default=1000000, help='Max fragment size')
+    sites_parser.add_argument('--min-size', type=int, default=20, 
+                             help='Min fragment size (default: 20)')
+    sites_parser.add_argument('--max-size', type=int, default=1000000, 
+                             help='Max fragment size (default: 1000000)')
     sites_parser.set_defaults(func=cmd_generate_sites)
     
     # Parse arguments

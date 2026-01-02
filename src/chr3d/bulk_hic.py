@@ -72,9 +72,9 @@ class FastqSplitter:
     manageable chunks that can be processed in parallel.
     
     Example:
-        >>> import rowan_pet as rp
+        >>> import chr3d as c3d
         >>> 
-        >>> splitter = rp.FastqSplitter(n_chunks=10)
+        >>> splitter = c3d.FastqSplitter(n_chunks=10)
         >>> chunks = splitter.split(
         ...     fastq1="sample_R1.fastq.gz",
         ...     fastq2="sample_R2.fastq.gz",
@@ -213,9 +213,9 @@ class HiCAligner:
     Uses BWA MEM with -SP5M flags optimized for Hi-C chimeric reads.
     
     Example:
-        >>> import rowan_pet as rp
+        >>> import chr3d as c3d
         >>> 
-        >>> aligner = rp.HiCAligner(
+        >>> aligner = c3d.HiCAligner(
         ...     genome_index="/path/to/hg38.fa",
         ...     threads=24
         ... )
@@ -319,9 +319,9 @@ class HiCSamProcessor:
     Converts SAM to BAM and sorts by read name (required for pairtools).
     
     Example:
-        >>> import rowan_pet as rp
+        >>> import chr3d as c3d
         >>> 
-        >>> processor = rp.HiCSamProcessor(threads=24)
+        >>> processor = c3d.HiCSamProcessor(threads=24)
         >>> stats = processor.process(
         ...     input_sam="aligned.sam",
         ...     output_bam="sorted.bam"
@@ -410,9 +410,9 @@ class HiCPairsProcessor:
     - filter: Filter valid pair types
     
     Example:
-        >>> import rowan_pet as rp
+        >>> import chr3d as c3d
         >>> 
-        >>> pairs = rp.HiCPairsProcessor(
+        >>> pairs = c3d.HiCPairsProcessor(
         ...     chrom_sizes="/path/to/hg38.chrom.sizes",
         ...     assembly="hg38",
         ...     threads=24
@@ -654,9 +654,9 @@ class HiCMatrixGenerator:
     Creates .cool and multi-resolution .mcool files from pairs.
     
     Example:
-        >>> import rowan_pet as rp
+        >>> import chr3d as c3d
         >>> 
-        >>> matrix = rp.HiCMatrixGenerator(
+        >>> matrix = c3d.HiCMatrixGenerator(
         ...     chrom_sizes="/path/to/hg38.chrom.sizes",
         ...     assembly="hg38",
         ...     threads=24
@@ -818,10 +818,10 @@ class HiCPipeline:
     - HiCMatrixGenerator: cooler matrix generation
     
     Example:
-        >>> import rowan_pet as rp
+        >>> import chr3d as c3d
         >>> 
         >>> # Initialize pipeline
-        >>> hic = rp.HiCPipeline(
+        >>> hic = c3d.HiCPipeline(
         ...     genome_index="/path/to/hg38.fa",
         ...     chrom_sizes="/path/to/hg38.chrom.sizes",
         ...     threads=24
@@ -1318,9 +1318,9 @@ class HiCQCAnalyzer:
     Parses and summarizes QC metrics from Hi-C pipeline outputs.
     
     Example:
-        >>> import rowan_pet as rp
+        >>> import chr3d as c3d
         >>> 
-        >>> qc = rp.HiCQCAnalyzer()
+        >>> qc = c3d.HiCQCAnalyzer()
         >>> stats = qc.analyze(qc_dir="results/qc", output_dir="results/summary")
     """
     

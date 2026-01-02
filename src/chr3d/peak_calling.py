@@ -416,12 +416,12 @@ def main():
         epilog="""
 Examples:
   # Basic usage
-  python -m rowan_pet.peak_calling \\
+  python -m chr3d.peak_calling \\
       input.spet \\
       output_prefix
   
   # With custom parameters
-  python -m rowan_pet.peak_calling \\
+  python -m chr3d.peak_calling \\
       input.spet \\
       output_prefix \\
       --genome-size hs \\

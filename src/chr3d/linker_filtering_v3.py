@@ -15,12 +15,12 @@ PERFORMANCE:
 
 USAGE:
     # Basic filtering with all CPUs
-    python -m rowan_pet.linker_filtering_v3 \\
+    python -m chr3d.linker_filtering_v3 \\
         --r1 R1.fastq.gz --r2 R2.fastq.gz \\
         --output-prefix filtered --threads 24
     
     # Chunk-based parallel processing (recommended for large files)
-    python -m rowan_pet.linker_filtering_v3 \\
+    python -m chr3d.linker_filtering_v3 \\
         --r1 R1.fastq.gz --r2 R2.fastq.gz \\
         --output-prefix filtered --threads 24 --chunks 6
 """
@@ -835,12 +835,12 @@ def main():
         epilog="""
 Examples:
   # Basic filtering with all CPUs
-  python -m rowan_pet.linker_filtering_v3 \\
+  python -m chr3d.linker_filtering_v3 \\
       --r1 R1.fastq.gz --r2 R2.fastq.gz \\
       --output-prefix filtered --threads 24
   
   # Chunk-based parallel processing
-  python -m rowan_pet.linker_filtering_v3 \\
+  python -m chr3d.linker_filtering_v3 \\
       --r1 R1.fastq.gz --r2 R2.fastq.gz \\
       --output-prefix filtered --threads 24 --chunks 6
 
