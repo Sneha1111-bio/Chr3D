@@ -377,16 +377,18 @@ def _run_hic_pipeline(args, output_dir: Path):
             chrom_sizes=args.chrom_sizes,
             threads=args.threads,
             assembly=args.assembly,
+            min_mapq=args.mapping_quality,
+            min_distance=args.min_distance,
             resolutions=resolutions
         )
         
-        # Run pipeline
+        # Note: HiCPipeline uses 'cleanup' parameter (opposite of keep_intermediates)
         stats = hic_pipeline.run(
             fastq1=args.fastq_r1,
             fastq2=args.fastq_r2,
-            output_dir=str(output_dir),
-            sample_id='sample',
-            keep_intermediates=args.keep_intermediates
+            output_dir=output_dir,
+            sample_id=args.sample_id,
+            cleanup=not args.keep_intermediates
         )
         
         logger.info("\n" + "=" * 70)
@@ -742,6 +744,9 @@ For more information: https://github.com/rudrajoshi2481/Chr3D
     run_parser.add_argument('--resolution', default='1000,5000,10000',
                            help='Resolutions for Hi-C matrices (comma-separated, default: 1000,5000,10000)')
     run_parser.add_argument('--assembly', default='hg38', help='Genome assembly name (default: hg38)')
+    run_parser.add_argument('--min-distance', type=int, default=1000,
+                           help='Minimum distance for Hi-C pairs (default: 1000)')
+    run_parser.add_argument('--sample-id', default='sample', help='Sample identifier (default: sample)')
     
     # Output control
     run_parser.add_argument('--keep-intermediates', action='store_true',
