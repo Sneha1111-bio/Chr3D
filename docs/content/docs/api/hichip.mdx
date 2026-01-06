@@ -1,25 +1,394 @@
 ---
 title: HiChIP API
-description: Complete API reference for HiChIP class
+description: Complete Python API reference for HiChIP analysis
 ---
 
-## HiChIP Class
+# HiChIP Python API
 
-The `HiChIP` class provides methods for analyzing HiChIP data for protein-centric interaction mapping.
+Complete Python API for analyzing HiChIP (Hi-C + ChIP) data for protein-centric chromatin interaction mapping.
 
-## Key Methods
+## Overview
 
-### Loading Data
-- `from_pairs()` - Load from pairs format
-- `from_cooler()` - Load from cooler format
+**Important**: HiChIP does **NOT** use linker sequences. Unlike ChIA-PET, HiChIP uses biotinylated nucleotides incorporated during fill-in after restriction digestion.
 
-### Analysis
-- `normalize()` - Normalize contact matrix
-- `call_loops()` - Call loops with HiChIPper algorithm
-- `annotate_peaks()` - Annotate with ChIP-seq peaks
+HiChIP analysis requires these modules:
+- `PETMapper` - Read mapping (no linker filtering)
+- `HiChIPPurifier` - Restriction fragment-based purification
+- `PETCategorizer` - PET classification
+- `PeakCaller` - Peak calling from sPET
+- `PreClusterer`, `AnchorClusterer`, `StatisticalSignificance` - Loop calling with distance correction
 
-### Quality Control
-- `qc_report()` - Generate QC metrics
-- `compute_enrichment()` - Compute enrichment over background
+## Complete Pipeline Example
 
-See tutorials for complete usage examples.
+```python
+import sys
+sys.path.insert(0, '/path/to/Chr3D/src')
+
+from pathlib import Path
+from chr3d.mapping_v2 import PETMapper
+from chr3d.hichip_purifying import HiChIPPurifier
+from chr3d.pet_categorization import PETCategorizer
+from chr3d.peak_calling import PeakCaller
+from chr3d.loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
+
+# Configuration
+fastq_r1 = "/data/H3K27ac_HiChIP_R1.fastq.gz"
+fastq_r2 = "/data/H3K27ac_HiChIP_R2.fastq.gz"
+genome_index = "/ref/hg38.fa"
+restriction_sites = "/ref/hg38_MboI_sites.bed"
+output_dir = Path("/output/hichip_analysis")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+# =============================================================================
+# STEP 1: SKIPPED - HiChIP does NOT use linkers
+# =============================================================================
+# Unlike ChIA-PET, HiChIP reads are mapped directly without linker filtering
+
+# =============================================================================
+# STEP 2: GENOMIC MAPPING
+# =============================================================================
+mapper = PETMapper(
+    genome_index=genome_index,
+    mapping_quality_cutoff=30,
+    n_threads=8,
+    use_bwa_mem=True,  # Recommended for HiChIP
+    self_ligation_cutoff=8000
+)
+
+map_stats = mapper.map_linker_filtered_fastq(
+    fastq_r1=fastq_r1,
+    fastq_r2=fastq_r2,
+    output_prefix='mapped',
+    output_dir=str(output_dir / 'step2_mapping'),
+    keep_sam=False,
+    remove_duplicates=True
+)
+
+print(f"Total PETs: {map_stats.get('total_pets', 'N/A')}")
+print(f"Unique PETs: {map_stats.get('unique_pets', 'N/A')}")
+
+bedpe_file = str(output_dir / 'step2_mapping/mapped.dedup.bedpe')
+
+# =============================================================================
+# STEP 3: PET PURIFYING (Restriction Fragment Filtering)
+# =============================================================================
+# Remove same-fragment PETs (invalid ligation products)
+purifier = HiChIPPurifier(restriction_file=restriction_sites)
+
+purified_bedpe = str(output_dir / 'step3_purifying/purified.valid.bedpe')
+sameres_bedpe = str(output_dir / 'step3_purifying/purified.sameres.bedpe')
+
+purify_stats = purifier.remove_same_fragment_pets(
+    bedpe_file,
+    purified_bedpe,
+    sameres_bedpe
+)
+
+print(f"Valid PETs: {purify_stats.get('valid_pets', 'N/A')}")
+print(f"Same-fragment removed: {purify_stats.get('same_fragment_pets', 'N/A')}")
+
+# =============================================================================
+# STEP 4: PET CATEGORIZATION
+# =============================================================================
+categorizer = PETCategorizer(
+    self_ligation_cutoff=1000,  # 1kb for HiChIP (shorter than ChIA-PET)
+    mode='hichip'
+)
+
+cat_stats = categorizer.categorize_bedpe(
+    purified_bedpe,
+    str(output_dir / 'step4_categorization/categorized')
+)
+
+print(f"iPETs: {cat_stats['ipet']['count']:,} ({cat_stats['ipet']['percentage']:.1f}%)")
+print(f"sPETs: {cat_stats['spet']['count']:,} ({cat_stats['spet']['percentage']:.1f}%)")
+
+ipet_file = str(output_dir / 'step4_categorization/categorized.ipet')
+spet_file = str(output_dir / 'step4_categorization/categorized.spet')
+
+# =============================================================================
+# STEP 5: PEAK CALLING
+# =============================================================================
+peak_caller = PeakCaller(
+    genome_size='hs',
+    qvalue_cutoff=0.05,
+    keep_dup='all'
+)
+
+peak_stats = peak_caller.call_peaks(
+    spet_file,
+    str(output_dir / 'step5_peaks/peaks')
+)
+
+print(f"Peaks called: {peak_stats.get('num_peaks', 0):,}")
+
+# =============================================================================
+# STEP 6: LOOP CALLING WITH DISTANCE CORRECTION
+# =============================================================================
+
+# Step 6.1: Pre-clustering
+pre_clusterer = PreClusterer(extension_length=500)
+precluster_stats = pre_clusterer.pre_cluster(
+    ipet_file,
+    str(output_dir / 'step6_loops/preclustered')
+)
+
+print(f"Pre-clusters: {precluster_stats.get('cluster_count', 0):,}")
+
+# Step 6.2: Anchor clustering
+anchor_clusterer = AnchorClusterer()
+cluster_stats = anchor_clusterer.cluster_anchors(
+    precluster_stats['output_file'],
+    str(output_dir / 'step6_loops/clusters.txt')
+)
+
+print(f"Anchor clusters: {cluster_stats.get('total_anchor_clusters', 0):,}")
+
+# Step 6.3: Statistical significance with DISTANCE CORRECTION
+# HiChIP requires distance correction due to proximity ligation bias
+stat_sig = StatisticalSignificance(
+    ipet_count_threshold=2,
+    pvalue_cutoff=0.05,
+    extension_length=500,
+    use_distance_correction=True  # IMPORTANT: Enable for HiChIP
+)
+
+sig_stats = stat_sig.calculate_significance(
+    str(output_dir / 'step6_loops/clusters.txt'),
+    ipet_file,
+    str(output_dir / 'step6_loops/loops')
+)
+
+print(f"Total loops tested: {sig_stats.get('total_loops', 0):,}")
+print(f"Significant loops (FDR < 0.05): {sig_stats.get('significant_loops', 0):,}")
+```
+
+## Module Reference
+
+### PETMapper
+
+BWA-based read mapping with BEDPE generation.
+
+```python
+from chr3d.mapping_v2 import PETMapper
+
+mapper = PETMapper(
+    genome_index: str,                    # BWA-indexed genome FASTA
+    mapping_quality_cutoff: int = 30,     # Minimum MAPQ
+    n_threads: int = 1,                   # Number of threads
+    use_bwa_mem: bool = True,             # Use BWA-MEM (recommended for HiChIP)
+    self_ligation_cutoff: int = 8000      # Self-ligation distance cutoff
+)
+
+stats = mapper.map_linker_filtered_fastq(
+    fastq_r1: str,                        # Input R1 FASTQ
+    fastq_r2: str,                        # Input R2 FASTQ
+    output_prefix: str,                   # Output file prefix
+    output_dir: str = None,               # Output directory
+    keep_sam: bool = False,               # Keep SAM files
+    remove_duplicates: bool = True        # Remove PCR duplicates
+) -> Dict
+```
+
+**Returns:**
+```python
+{
+    'total_pets': int,
+    'unique_pets': int,
+    'duplicate_rate': float,
+    'cis_ratio': float,
+    'trans_ratio': float
+}
+```
+
+### HiChIPPurifier
+
+Removes same-fragment PETs using restriction site information.
+
+```python
+from chr3d.hichip_purifying import HiChIPPurifier
+
+purifier = HiChIPPurifier(
+    restriction_file: str    # BED file with restriction sites
+)
+
+stats = purifier.remove_same_fragment_pets(
+    input_bedpe: str,        # Input BEDPE file
+    output_valid: str,       # Output valid PETs
+    output_sameres: str      # Output same-fragment PETs (removed)
+) -> Dict
+```
+
+**Returns:**
+```python
+{
+    'total_pets': int,
+    'valid_pets': int,
+    'same_fragment_pets': int,
+    'valid_ratio': float
+}
+```
+
+**Why This Step is Critical:**
+- Same-fragment PETs are artifacts from self-ligation
+- Valid PETs must span different restriction fragments
+- This is unique to HiChIP (ChIA-PET uses merge-based purification)
+
+### PETCategorizer
+
+Classifies PETs into iPET, sPET, and oPET categories.
+
+```python
+from chr3d.pet_categorization import PETCategorizer
+
+categorizer = PETCategorizer(
+    self_ligation_cutoff: int = 1000,  # 1kb for HiChIP (vs 8kb for ChIA-PET)
+    mode: str = 'hichip'               # 'hichip' or 'chiapet'
+)
+
+stats = categorizer.categorize_bedpe(
+    input_bedpe: str,
+    output_prefix: str
+) -> Dict
+```
+
+**Returns:**
+```python
+{
+    'total': int,
+    'ipet': {'count': int, 'percentage': float},
+    'spet': {'count': int, 'percentage': float},
+    'opet': {'count': int, 'percentage': float},
+    'cis': {'count': int, 'percentage': float},
+    'trans': {'count': int, 'percentage': float}
+}
+```
+
+### PeakCaller
+
+MACS3-based peak calling from self-ligation PETs.
+
+```python
+from chr3d.peak_calling import PeakCaller
+
+caller = PeakCaller(
+    genome_size: str = 'hs',       # 'hs', 'mm', or number
+    qvalue_cutoff: float = 0.05,   # Q-value threshold
+    keep_dup: str = 'all'          # Duplicate handling
+)
+
+stats = caller.call_peaks(
+    input_file: str,               # sPET file
+    output_prefix: str             # Output prefix
+) -> Dict
+```
+
+### Loop Calling Classes
+
+#### PreClusterer
+
+```python
+from chr3d.loop_calling import PreClusterer
+
+clusterer = PreClusterer(
+    extension_length: int = 500,        # Tag extension (bp)
+    chrom_sizes_file: str = None        # Optional chromosome sizes
+)
+
+stats = clusterer.pre_cluster(
+    ipet_file: str,
+    output_prefix: str
+) -> Dict
+```
+
+#### AnchorClusterer
+
+```python
+from chr3d.loop_calling import AnchorClusterer
+
+clusterer = AnchorClusterer()
+
+stats = clusterer.cluster_anchors(
+    precluster_file: str,
+    output_file: str
+) -> Dict
+```
+
+#### StatisticalSignificance
+
+```python
+from chr3d.loop_calling import StatisticalSignificance
+
+sig = StatisticalSignificance(
+    ipet_count_threshold: int = 2,         # Min iPET count
+    pvalue_cutoff: float = 0.05,           # P-value threshold
+    extension_length: int = 500,           # Extension for counting
+    use_distance_correction: bool = True   # ENABLE for HiChIP!
+)
+
+stats = sig.calculate_significance(
+    cluster_file: str,
+    ipet_file: str,
+    output_prefix: str
+) -> Dict
+```
+
+**Distance Correction:**
+HiChIP data has inherent distance bias due to proximity ligation. The `use_distance_correction=True` parameter applies a distance-dependent expected value model to correct for this bias.
+
+## Generating Restriction Sites
+
+Before running HiChIP analysis, generate the restriction sites file:
+
+```python
+from chr3d.restriction_sites import RestrictionSiteGenerator
+
+generator = RestrictionSiteGenerator(
+    genome_fasta='/ref/hg38.fa',
+    enzyme='MboI'  # or 'DpnII', 'HindIII', etc.
+)
+
+generator.generate(output_file='/ref/hg38_MboI_sites.bed')
+```
+
+Or use CLI:
+```bash
+chr3d generate-sites --genome /ref/hg38.fa --enzyme MboI --output /ref/hg38_MboI_sites.bed
+```
+
+## Output Files
+
+| File | Description |
+|------|-------------|
+| `mapped.dedup.bedpe` | Deduplicated mapped PETs |
+| `purified.valid.bedpe` | Valid inter-fragment PETs |
+| `purified.sameres.bedpe` | Removed same-fragment PETs |
+| `categorized.ipet` | Inter-ligation PETs |
+| `categorized.spet` | Self-ligation PETs |
+| `peaks_peaks.narrowPeak` | Called peaks |
+| `loops.cluster.filtered` | All loops meeting threshold |
+| `loops.cluster.FDRfiltered.txt` | Significant loops |
+
+## HiChIP vs ChIA-PET Differences
+
+| Feature | HiChIP | ChIA-PET |
+|---------|--------|----------|
+| Linker filtering | **No** | Yes |
+| Restriction enzyme | Yes (MboI/DpnII) | No |
+| Purification | Fragment-based | Merge-based |
+| Distance cutoff | 1kb | 8kb |
+| Statistical model | Distance-corrected | Standard Poisson |
+| Input requirement | Low (1M cells) | High (100M cells) |
+
+## Quality Metrics
+
+**Good HiChIP Data:**
+- Mapping rate: >70%
+- Cis ratio: >60%
+- Valid PET ratio (after purification): >50%
+- iPET percentage: >40%
+
+**Warning Signs:**
+- Low cis ratio (<40%): May indicate ligation issues
+- High same-fragment rate (>50%): Incomplete digestion
+- Few peaks: Low enrichment or wrong antibody

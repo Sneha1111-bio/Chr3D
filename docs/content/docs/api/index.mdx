@@ -1,36 +1,277 @@
 ---
 title: API Reference
-description: Complete API documentation for Chr3D
+description: Complete API documentation for Chr3D Python modules
 ---
 
-## Chr3D API Reference
+# Chr3D Python API Reference
 
-Chr3D provides a unified Python API for analyzing 3D chromatin conformation data.
+Chr3D provides a comprehensive Python API for analyzing 3D chromatin conformation data from ChIA-PET, HiChIP, and Hi-C experiments.
 
-## Core Classes
-
-### HiC
-
-[HiC API Reference](./hic) - Analyze Hi-C data for genome-wide chromatin architecture.
-
-### ChIAPET
-
-[ChIAPET API Reference](./chiapet) - Analyze ChIA-PET data for protein-specific chromatin interactions.
-
-### HiChIP
-
-[HiChIP API Reference](./hichip) - Analyze HiChIP data for low-input protein-specific interactions.
-
-### Utilities
-
-[Utilities API Reference](./utils) - Helper functions for common tasks.
-
-## Quick Example
+## Installation
 
 ```python
-from chr3d import HiC
+pip install chr3d
+```
 
-hic = HiC.from_cooler("sample.cool")
-hic_norm = hic.normalize(method="ICE")
-loops = hic_norm.call_loops(method="hiccups")
+## Core Modules
+
+### Pipeline Classes
+
+| Module | Description |
+|--------|-------------|
+| [ChIA-PET API](./chiapet) | Linker filtering, mapping, loop calling for ChIA-PET |
+| [HiChIP API](./hichip) | Restriction-based purification, loop calling for HiChIP |
+| [Hi-C API](./hic) | Contact matrix generation for Hi-C |
+| [Utilities](./utils) | Helper functions and common operations |
+
+## Quick Start Examples
+
+### ChIA-PET Analysis
+
+```python
+import sys
+sys.path.insert(0, '/path/to/Chr3D/src')
+
+from chr3d.linker_filtering_v3 import LinkerFilterV3
+from chr3d.mapping_v2 import PETMapper
+from chr3d.chiapet_purifying import ChIAPETPurifier
+from chr3d.pet_categorization import PETCategorizer
+from chr3d.peak_calling import PeakCaller
+from chr3d.loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
+
+# Step 1: Filter linkers
+linker_filter = LinkerFilterV3(
+    linker_sequences=['ACGCGATATCTTATCTGACT', 'AGTCAGATAAGATATCGCGT'],
+    n_threads=8
+)
+stats = linker_filter.filter_fastq_parallel(
+    fastq_r1='sample_R1.fastq.gz',
+    fastq_r2='sample_R2.fastq.gz',
+    output_prefix='filtered',
+    output_dir='./output'
+)
+
+# Continue with mapping, purifying, categorization, peak calling, loop calling...
+```
+
+### HiChIP Analysis
+
+```python
+from chr3d.mapping_v2 import PETMapper
+from chr3d.hichip_purifying import HiChIPPurifier
+from chr3d.pet_categorization import PETCategorizer
+from chr3d.peak_calling import PeakCaller
+from chr3d.loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
+
+# Step 1: Map reads (no linker filtering for HiChIP)
+mapper = PETMapper(
+    genome_index='/ref/hg38.fa',
+    mapping_quality_cutoff=30,
+    n_threads=8,
+    use_bwa_mem=True
+)
+map_stats = mapper.map_linker_filtered_fastq(
+    fastq_r1='sample_R1.fastq.gz',
+    fastq_r2='sample_R2.fastq.gz',
+    output_prefix='mapped',
+    output_dir='./output/mapping'
+)
+
+# Step 2: Purify (remove same-fragment PETs)
+purifier = HiChIPPurifier(restriction_file='/ref/hg38_MboI_sites.bed')
+purify_stats = purifier.remove_same_fragment_pets(
+    './output/mapping/mapped.dedup.bedpe',
+    './output/purified.valid.bedpe',
+    './output/purified.sameres.bedpe'
+)
+
+# Continue with categorization, peak calling, loop calling...
+```
+
+### Hi-C Analysis
+
+```python
+from chr3d.bulk_hic import HiCPipeline
+
+# Initialize pipeline
+hic_pipeline = HiCPipeline(
+    genome_index='/ref/hg38.fa',
+    chrom_sizes='/ref/hg38.chrom.sizes',
+    threads=8,
+    assembly='hg38',
+    min_mapq=30,
+    min_distance=1000,
+    resolutions=[1000, 5000, 10000, 25000, 50000]
+)
+
+# Run complete pipeline
+stats = hic_pipeline.run(
+    fastq1='sample_R1.fastq.gz',
+    fastq2='sample_R2.fastq.gz',
+    output_dir='./output',
+    sample_id='HiC_sample',
+    cleanup=True
+)
+```
+
+## Module Overview
+
+### Linker Filtering (`chr3d.linker_filtering_v3`)
+
+High-performance linker detection and filtering for ChIA-PET data.
+
+```python
+from chr3d.linker_filtering_v3 import LinkerFilterV3
+
+filter = LinkerFilterV3(
+    linker_sequences=['ACGCGATATCTTATCTGACT'],
+    min_alignment_score=14,
+    min_tag_length=18,
+    max_tag_length=1000,
+    n_threads=8
+)
+```
+
+### Mapping (`chr3d.mapping_v2`)
+
+BWA-based read mapping with BEDPE generation.
+
+```python
+from chr3d.mapping_v2 import PETMapper
+
+mapper = PETMapper(
+    genome_index='/ref/hg38.fa',
+    mapping_quality_cutoff=30,
+    n_threads=8,
+    use_bwa_mem=True,
+    self_ligation_cutoff=8000
+)
+```
+
+### Purification
+
+#### ChIA-PET (`chr3d.chiapet_purifying`)
+```python
+from chr3d.chiapet_purifying import ChIAPETPurifier
+purifier = ChIAPETPurifier(merge_distance=2)
+```
+
+#### HiChIP (`chr3d.hichip_purifying`)
+```python
+from chr3d.hichip_purifying import HiChIPPurifier
+purifier = HiChIPPurifier(restriction_file='/ref/hg38_MboI_sites.bed')
+```
+
+### PET Categorization (`chr3d.pet_categorization`)
+
+Classifies PETs into iPET, sPET, and oPET categories.
+
+```python
+from chr3d.pet_categorization import PETCategorizer
+
+categorizer = PETCategorizer(
+    self_ligation_cutoff=1000,  # 1kb for HiChIP, 8kb for ChIA-PET
+    mode='hichip'  # or 'chiapet'
+)
+```
+
+### Peak Calling (`chr3d.peak_calling`)
+
+MACS3-based peak calling from self-ligation PETs.
+
+```python
+from chr3d.peak_calling import PeakCaller
+
+peak_caller = PeakCaller(
+    genome_size='hs',
+    qvalue_cutoff=0.05,
+    keep_dup='all'
+)
+```
+
+### Loop Calling (`chr3d.loop_calling`)
+
+Statistical loop calling with FDR correction.
+
+```python
+from chr3d.loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
+
+# Pre-clustering
+pre_clusterer = PreClusterer(extension_length=500)
+precluster_stats = pre_clusterer.pre_cluster(ipet_file, output_prefix)
+
+# Anchor clustering
+anchor_clusterer = AnchorClusterer()
+cluster_stats = anchor_clusterer.cluster_anchors(precluster_file, cluster_file)
+
+# Statistical significance
+stat_sig = StatisticalSignificance(
+    ipet_count_threshold=2,
+    pvalue_cutoff=0.05,
+    extension_length=500,
+    use_distance_correction=True  # For HiChIP
+)
+sig_stats = stat_sig.calculate_significance(cluster_file, ipet_file, output_prefix)
+```
+
+### Hi-C Pipeline (`chr3d.bulk_hic`)
+
+Complete Hi-C processing with pairtools and cooler.
+
+```python
+from chr3d.bulk_hic import HiCPipeline
+
+pipeline = HiCPipeline(
+    genome_index='/ref/hg38.fa',
+    chrom_sizes='/ref/hg38.chrom.sizes',
+    threads=8,
+    resolutions=[1000, 5000, 10000]
+)
+```
+
+## Return Values
+
+Most methods return dictionaries with statistics:
+
+```python
+# Example mapping stats
+{
+    'total_pets': 1000000,
+    'unique_pets': 800000,
+    'duplicate_rate': 0.2,
+    'cis_ratio': 0.85
+}
+
+# Example loop calling stats
+{
+    'total_loops': 5000,
+    'significant_loops': 1500,
+    'fdr_threshold': 0.05
+}
+```
+
+## Error Handling
+
+```python
+try:
+    stats = mapper.map_linker_filtered_fastq(...)
+except FileNotFoundError as e:
+    print(f"Input file not found: {e}")
+except ValueError as e:
+    print(f"Invalid parameter: {e}")
+```
+
+## Logging
+
+Chr3D uses Python's logging module:
+
+```python
+import logging
+
+# Enable debug logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Or configure specific logger
+logger = logging.getLogger('chr3d')
+logger.setLevel(logging.INFO)
 ```
