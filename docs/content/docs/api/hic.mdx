@@ -307,8 +307,8 @@ The pipeline generates QC statistics in `qc/sample_pairs.stats`:
 | total_nodups | Unique pairs |
 | cis | Same-chromosome pairs |
 | trans | Different-chromosome pairs |
-| cis_1kb+ | Cis pairs >1kb apart |
-| cis_10kb+ | Cis pairs >10kb apart |
+| cis_1kb+ | Cis pairs &gt;1kb apart |
+| cis_10kb+ | Cis pairs &gt;10kb apart |
 | summary/frac_cis | Fraction of cis pairs |
 
 ## Quality Metrics
@@ -317,10 +317,10 @@ The pipeline generates QC statistics in `qc/sample_pairs.stats`:
 
 | Metric | Good | Acceptable | Poor |
 |--------|------|------------|------|
-| Mapping rate | >90% | 70-90% | <70% |
-| Cis ratio | >60% | 40-60% | <40% |
-| Cis >10kb | >40% | 20-40% | <20% |
-| Duplicate rate | <20% | 20-40% | >40% |
+| Mapping rate | &gt;90% | 70-90% | &lt;70% |
+| Cis ratio | &gt;60% | 40-60% | &lt;40% |
+| Cis &gt;10kb | &gt;40% | 20-40% | &lt;20% |
+| Duplicate rate | &lt;20% | 20-40% | &gt;40% |
 
 ## Resolution Guidelines
 
@@ -365,8 +365,8 @@ cut -f1,2 /ref/hg38.fa.fai > /ref/hg38.chrom.sizes
 
 ## Tips
 
-1. **Sequencing Depth**: Aim for >500M read pairs for 1kb resolution
-2. **Memory**: High resolutions require significant RAM (>64GB for 1kb)
+1. **Sequencing Depth**: Aim for &gt;500M read pairs for 1kb resolution
+2. **Memory**: High resolutions require significant RAM (&gt;64GB for 1kb)
 3. **Storage**: .mcool files can be large (10-100GB)
 4. **Normalization**: Always use balanced matrices for analysis
 5. **Multiple Resolutions**: Generate multiple for different analyses

@@ -223,8 +223,8 @@ The `qc/sample_pairs.stats` file contains:
 | total_nodups | Unique pairs |
 | cis | Same-chromosome pairs |
 | trans | Different-chromosome pairs |
-| cis_1kb+ | Cis pairs >1kb apart |
-| cis_10kb+ | Cis pairs >10kb apart |
+| cis_1kb+ | Cis pairs &gt;1kb apart |
+| cis_10kb+ | Cis pairs &gt;10kb apart |
 | summary/frac_cis | Fraction of cis pairs |
 
 ## Quality Metrics
@@ -233,14 +233,14 @@ The `qc/sample_pairs.stats` file contains:
 
 | Metric | Good | Acceptable | Poor |
 |--------|------|------------|------|
-| Mapping rate | >90% | 70-90% | <70% |
-| Cis ratio | >60% | 40-60% | <40% |
-| Cis >10kb | >40% | 20-40% | <20% |
-| Duplicate rate | <20% | 20-40% | >40% |
+| Mapping rate | &gt;90% | 70-90% | &lt;70% |
+| Cis ratio | &gt;60% | 40-60% | &lt;40% |
+| Cis &gt;10kb | &gt;40% | 20-40% | &lt;20% |
+| Duplicate rate | &lt;20% | 20-40% | &gt;40% |
 
 **Interpreting Results:**
 - **High trans ratio**: May indicate random ligation or contamination
-- **Low cis >10kb**: Short-range bias, may need optimization
+- **Low cis &gt;10kb**: Short-range bias, may need optimization
 - **High duplicate rate**: Low library complexity
 
 ## Resolution Guidelines
@@ -315,9 +315,9 @@ java -jar juicer_tools.jar pre \
 
 ## Tips
 
-1. **Sequencing Depth**: Aim for >500M read pairs for 1kb resolution
+1. **Sequencing Depth**: Aim for &gt;500M read pairs for 1kb resolution
 2. **Chromosome Sizes**: Must match your reference genome exactly
-3. **Memory**: High resolutions require significant RAM (>64GB for 1kb)
+3. **Memory**: High resolutions require significant RAM (&gt;64GB for 1kb)
 4. **Storage**: .mcool files can be large (10-100GB)
 5. **Normalization**: Use `cooler balance` for downstream analysis
 
