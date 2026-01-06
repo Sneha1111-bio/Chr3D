@@ -178,11 +178,34 @@ class PETCategorizer:
         """
         logger.info(f"Loading BEDPE file: {input_bedpe}")
         
-        # Read BEDPE file (with optional weight column)
-        column_names = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2',
-                       'name', 'score', 'strand1', 'strand2', 'weight']
+        # Detect number of columns first
+        with open(input_bedpe, 'r') as f:
+            first_line = f.readline().strip()
+            if first_line.startswith('#'):
+                first_line = f.readline().strip()
+            num_cols = len(first_line.split('\t'))
+        
+        # Read BEDPE file - handle different column counts
+        # Standard BEDPE: chr1, start1, end1, chr2, start2, end2, name, score, strand1, strand2
+        # HiChIP purified: adds frag1, frag2, distance columns
+        base_cols = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2',
+                    'name', 'score', 'strand1', 'strand2']
+        
+        if num_cols == 11:
+            column_names = base_cols + ['weight']
+        elif num_cols == 13:
+            # HiChIP purified format with fragment indices and distance
+            column_names = base_cols + ['frag1', 'frag2', 'distance_col']
+        elif num_cols >= 12:
+            column_names = base_cols + [f'extra_{i}' for i in range(num_cols - 10)]
+        else:
+            column_names = base_cols[:num_cols]
         
         df = pd.read_csv(input_bedpe, sep='\t', comment='#', names=column_names)
+        
+        # Ensure weight column exists
+        if 'weight' not in df.columns:
+            df['weight'] = 1
         
         logger.info(f"Loaded {len(df):,} chromatin interactions")
         

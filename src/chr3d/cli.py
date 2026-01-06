@@ -53,7 +53,7 @@ def setup_logging(verbose: bool = False, log_file: str = None):
 
 def cmd_filter_linker(args):
     """Step 1: Filter linker sequences from FASTQ files."""
-    from .linker_filtering_v2 import LinkerFilterV2
+    from .linker_filtering_v3 import LinkerFilterV3
     
     logger.info("=" * 70)
     logger.info("STEP 1: LINKER FILTERING")
@@ -74,7 +74,7 @@ def cmd_filter_linker(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Initialize filter
-    linker_filter = LinkerFilterV2(
+    linker_filter = LinkerFilterV3(
         linker_sequences=linkers,
         min_alignment_score=args.min_score,
         min_tag_length=args.min_tag_length,
@@ -338,8 +338,8 @@ def cmd_run(args):
     logger.info(f"Keep intermediates: {args.keep_intermediates}")
     
     # Validate mode-specific requirements
-    if args.mode in ['chiapet', 'hichip'] and not args.linker_a:
-        logger.error(f"--linker-a is required for {args.mode} mode")
+    if args.mode == 'chiapet' and not args.linker_a:
+        logger.error("--linker-a is required for chiapet mode")
         return 1
     if args.mode == 'hichip' and not args.restriction_sites:
         logger.error("--restriction-sites is required for hichip mode")
@@ -428,24 +428,24 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
         d.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Step 1: Linker Filtering (if linkers provided)
-        if args.linker_a:
-            from .linker_filtering_v2 import LinkerFilterV2
+        # Step 1: Linker Filtering (ChIA-PET only - HiChIP does NOT use linkers)
+        if args.mode == 'chiapet' and args.linker_a:
+            from .linker_filtering_v3 import LinkerFilterV3
             
             logger.info("\n" + "=" * 70)
-            logger.info("STEP 1: LINKER FILTERING")
+            logger.info("STEP 1: LINKER FILTERING (ChIA-PET)")
             logger.info("=" * 70)
             
             linkers = [args.linker_a]
             if args.linker_b:
                 linkers.append(args.linker_b)
             
-            linker_filter = LinkerFilterV2(
+            linker_filter = LinkerFilterV3(
                 linker_sequences=linkers,
                 n_threads=args.threads
             )
             
-            linker_stats = linker_filter.filter_fastq(
+            linker_stats = linker_filter.filter_fastq_parallel(
                 fastq_r1=args.fastq_r1,
                 fastq_r2=args.fastq_r2,
                 output_prefix='filtered',
@@ -456,6 +456,10 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             fastq_r1 = str(step_dirs['step1'] / 'filtered.1_1.R1.fastq')
             fastq_r2 = str(step_dirs['step1'] / 'filtered.1_1.R2.fastq')
         else:
+            # HiChIP uses original FASTQs directly (no linker filtering needed)
+            logger.info("\n" + "=" * 70)
+            logger.info("STEP 1: SKIPPED (HiChIP does not use linkers)")
+            logger.info("=" * 70)
             fastq_r1 = args.fastq_r1
             fastq_r2 = args.fastq_r2
         
