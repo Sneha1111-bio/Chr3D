@@ -417,13 +417,18 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
     
     # Set up step-specific output directories
     step_dirs = {
-        'step1': output_dir / 'step1_linker_filtering',
         'step2': output_dir / 'step2_mapping',
         'step3': output_dir / 'step3_purifying',
         'step4': output_dir / 'step4_categorization',
         'step5': output_dir / 'step5_peaks',
-        'step6': output_dir / 'step6_loops'
+        'step6': output_dir / 'step6_loops',
+        'qc': output_dir / 'qc'
     }
+    
+    # Only create step1 for ChIA-PET mode
+    if args.mode == 'chiapet':
+        step_dirs['step1'] = output_dir / 'step1_linker_filtering'
+    
     for d in step_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
     
@@ -470,11 +475,14 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
         logger.info("STEP 2: GENOMIC MAPPING")
         logger.info("=" * 70)
         
+        # Use BWA-MEM by default, unless --use-bwa-aln is specified
+        use_bwa_mem = not getattr(args, 'use_bwa_aln', False)
+        
         mapper = PETMapper(
             genome_index=args.genome_index,
             mapping_quality_cutoff=args.mapping_quality,
             n_threads=args.threads,
-            use_bwa_mem=args.use_bwa_mem,
+            use_bwa_mem=use_bwa_mem,
             self_ligation_cutoff=args.self_ligation_cutoff
         )
         
@@ -624,6 +632,105 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             logger.info(f"  Cleaned up {len(cleanup_patterns)} intermediate files")
             logger.info("=" * 70)
         
+        # Generate QC summary
+        logger.info("\n" + "=" * 70)
+        logger.info("GENERATING QC STATISTICS")
+        logger.info("=" * 70)
+        
+        qc_summary = {
+            'sample_id': args.sample_id,
+            'mode': args.mode,
+            'mapping': {
+                'total_pets': map_stats.get('total_pets', 'N/A'),
+                'mapped_pets': map_stats.get('mapped_pets', 'N/A'),
+                'unique_pets': map_stats.get('unique_pets', 'N/A'),
+                'duplicate_rate': map_stats.get('duplicate_rate', 'N/A'),
+            },
+            'purification': {
+                'total_pets': purify_stats.get('total_pets', 'N/A'),
+                'valid_pets': purify_stats.get('valid_pets', 'N/A'),
+                'same_fragment_pets': purify_stats.get('same_fragment_pets', 'N/A'),
+                'valid_ratio': purify_stats.get('valid_ratio', 'N/A'),
+            },
+            'categorization': {
+                'total': cat_stats.get('total', 0),
+                'ipet_count': cat_stats['ipet']['count'],
+                'ipet_percentage': cat_stats['ipet']['percentage'],
+                'spet_count': cat_stats['spet']['count'],
+                'spet_percentage': cat_stats['spet']['percentage'],
+                'opet_count': cat_stats['opet']['count'],
+                'opet_percentage': cat_stats['opet']['percentage'],
+                'cis_percentage': cat_stats.get('cis', {}).get('percentage', 'N/A'),
+                'trans_percentage': cat_stats.get('trans', {}).get('percentage', 'N/A'),
+            },
+            'peaks': {
+                'num_peaks': peak_stats.get('num_peaks', 0),
+            },
+            'loops': {
+                'total_clusters': sig_stats.get('num_clusters', 'N/A'),
+                'significant_loops': sig_stats.get('num_significant_loops', 0),
+            }
+        }
+        
+        # Write QC summary to file
+        qc_file = step_dirs['qc'] / f'{args.sample_id}_qc_summary.txt'
+        with open(qc_file, 'w') as f:
+            f.write(f"{'=' * 70}\n")
+            f.write(f"{args.mode.upper()} QC SUMMARY\n")
+            f.write(f"{'=' * 70}\n")
+            f.write(f"Sample ID: {args.sample_id}\n")
+            f.write(f"Mode: {args.mode}\n")
+            f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            f.write(f"MAPPING STATISTICS\n")
+            f.write(f"-" * 40 + "\n")
+            f.write(f"Total PETs: {qc_summary['mapping']['total_pets']}\n")
+            f.write(f"Mapped PETs: {qc_summary['mapping']['mapped_pets']}\n")
+            f.write(f"Unique PETs: {qc_summary['mapping']['unique_pets']}\n")
+            dup_rate = qc_summary['mapping']['duplicate_rate']
+            if isinstance(dup_rate, (int, float)):
+                f.write(f"Duplicate Rate: {dup_rate*100:.1f}%\n")
+            else:
+                f.write(f"Duplicate Rate: {dup_rate}\n")
+            f.write("\n")
+            
+            f.write(f"PURIFICATION STATISTICS\n")
+            f.write(f"-" * 40 + "\n")
+            f.write(f"Total PETs: {qc_summary['purification']['total_pets']}\n")
+            f.write(f"Valid PETs: {qc_summary['purification']['valid_pets']}\n")
+            f.write(f"Same-fragment PETs: {qc_summary['purification']['same_fragment_pets']}\n")
+            valid_ratio = qc_summary['purification']['valid_ratio']
+            if isinstance(valid_ratio, (int, float)):
+                f.write(f"Valid Ratio: {valid_ratio*100:.1f}%\n")
+            else:
+                f.write(f"Valid Ratio: {valid_ratio}\n")
+            f.write("\n")
+            
+            f.write(f"CATEGORIZATION STATISTICS\n")
+            f.write(f"-" * 40 + "\n")
+            f.write(f"Total PETs: {qc_summary['categorization']['total']:,}\n")
+            f.write(f"iPETs: {qc_summary['categorization']['ipet_count']:,} ({qc_summary['categorization']['ipet_percentage']:.1f}%)\n")
+            f.write(f"sPETs: {qc_summary['categorization']['spet_count']:,} ({qc_summary['categorization']['spet_percentage']:.1f}%)\n")
+            f.write(f"oPETs: {qc_summary['categorization']['opet_count']:,} ({qc_summary['categorization']['opet_percentage']:.1f}%)\n")
+            f.write(f"Cis Ratio: {qc_summary['categorization']['cis_percentage']}%\n")
+            f.write(f"Trans Ratio: {qc_summary['categorization']['trans_percentage']}%\n")
+            f.write("\n")
+            
+            f.write(f"PEAK CALLING STATISTICS\n")
+            f.write(f"-" * 40 + "\n")
+            f.write(f"Peaks Called: {qc_summary['peaks']['num_peaks']:,}\n")
+            f.write("\n")
+            
+            f.write(f"LOOP CALLING STATISTICS\n")
+            f.write(f"-" * 40 + "\n")
+            f.write(f"Total Clusters: {qc_summary['loops']['total_clusters']}\n")
+            f.write(f"Significant Loops (FDR < {args.fdr_cutoff}): {qc_summary['loops']['significant_loops']:,}\n")
+            f.write("\n")
+            
+            f.write(f"{'=' * 70}\n")
+        
+        logger.info(f"QC summary written to: {qc_file}")
+        
         # Final summary
         logger.info("\n" + "=" * 70)
         logger.info(f"{args.mode.upper()} PIPELINE COMPLETE!")
@@ -634,6 +741,7 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
         logger.info(f"  sPET file: {spet_file}")
         logger.info(f"  Peaks: {step_dirs['step5'] / 'peaks_peaks.narrowPeak'}")
         logger.info(f"  Loops: {step_dirs['step6'] / 'loops.cluster.FDRfiltered.txt'}")
+        logger.info(f"  QC Summary: {qc_file}")
         logger.info(f"\nSummary:")
         logger.info(f"  Total PETs: {cat_stats['total']:,}")
         logger.info(f"  iPETs: {cat_stats['ipet']['count']:,} ({cat_stats['ipet']['percentage']:.1f}%)")
@@ -681,7 +789,6 @@ Examples:
       --fastq-r1 sample_R1.fastq.gz \\
       --fastq-r2 sample_R2.fastq.gz \\
       --genome-index /path/to/hg38.fa \\
-      --linker-a GTTGGATAAG \\
       --restriction-sites /path/to/MboI_sites.bed \\
       --output-dir results/ \\
       --threads 24 \\
@@ -731,7 +838,8 @@ For more information: https://github.com/rudrajoshi2481/Chr3D
     
     # Performance options
     run_parser.add_argument('--threads', type=int, default=24, help='Number of threads (default: 24)')
-    run_parser.add_argument('--use-bwa-mem', action='store_true', help='Use BWA-MEM instead of BWA-ALN')
+    run_parser.add_argument('--use-bwa-mem', action='store_true', default=True, help='Use BWA-MEM (default: True)')
+    run_parser.add_argument('--use-bwa-aln', action='store_true', help='Use BWA-ALN instead of BWA-MEM')
     
     # ChIA-PET/HiChIP parameters
     run_parser.add_argument('--genome-size', default='hs', help='Genome size for MACS3 (default: hs)')
