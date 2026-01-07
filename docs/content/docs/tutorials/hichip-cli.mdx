@@ -1,0 +1,482 @@
+---
+title: HiChIP CLI Tutorial
+description: Complete step-by-step HiChIP analysis using Chr3D command-line interface
+---
+
+# HiChIP Analysis with CLI
+
+This tutorial provides a comprehensive guide to analyzing HiChIP data using the Chr3D command-line interface.
+
+## Pipeline Overview
+
+```mermaid
+flowchart LR
+    subgraph Input["Input Files"]
+        F1[R1.fastq.gz]
+        F2[R2.fastq.gz]
+        G[genome.fa]
+        R[restriction_sites.bed]
+    end
+
+    subgraph CLI["chr3d run --mode hichip"]
+        S1[Step 1: Skip Linker]
+        S2[Step 2: Mapping]
+        S3[Step 3: Purifying]
+        S4[Step 4: Categorization]
+        S5[Step 5: Peak Calling]
+        S6[Step 6: Loop Calling]
+        S1 --> S2 --> S3 --> S4 --> S5
+        S4 --> S6
+    end
+
+    subgraph Output["Output Files"]
+        O1[mapped.bedpe]
+        O2[purified.bedpe]
+        O3[categorized.ipet/spet]
+        O4[peaks.narrowPeak]
+        O5[loops.FDRfiltered.txt]
+    end
+
+    F1 --> CLI
+    F2 --> CLI
+    G --> CLI
+    R --> CLI
+    CLI --> Output
+
+    style Input fill:#e8f5e9
+    style CLI fill:#e3f2fd
+    style Output fill:#fff3e0
+```
+
+## Quick Start
+
+```bash
+# Run complete HiChIP pipeline
+chr3d run --mode hichip \
+    --fastq-r1 sample_R1.fastq.gz \
+    --fastq-r2 sample_R2.fastq.gz \
+    --genome-index /ref/hg38.fa \
+    --restriction-sites /ref/hg38_MboI_sites.bed \
+    --output-dir ./hichip_output \
+    --threads 8 \
+    --sample-id my_sample
+```
+
+## Prerequisites
+
+### 1. Generate Restriction Sites File
+
+Before running HiChIP analysis, you need a restriction sites file for your enzyme:
+
+```bash
+# Generate MboI restriction sites for hg38
+chr3d generate-sites \
+    --genome /ref/hg38.fa \
+    --enzyme MboI \
+    --output /ref/hg38_MboI_sites.bed
+```
+
+**Common Restriction Enzymes:**
+
+| Enzyme | Recognition Site | Command |
+|--------|------------------|---------|
+| MboI | GATC | `--enzyme MboI` |
+| DpnII | GATC | `--enzyme DpnII` |
+| HindIII | AAGCTT | `--enzyme HindIII` |
+
+### 2. Index Reference Genome
+
+```bash
+# Create BWA index (if not already done)
+bwa index /ref/hg38.fa
+```
+
+## Complete Command Reference
+
+```bash
+chr3d run --mode hichip \
+    --fastq-r1 <R1.fastq.gz> \
+    --fastq-r2 <R2.fastq.gz> \
+    --genome-index <genome.fa> \
+    --restriction-sites <sites.bed> \
+    --output-dir <output_directory> \
+    [OPTIONS]
+```
+
+### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--fastq-r1` | Input R1 FASTQ file (gzipped supported) |
+| `--fastq-r2` | Input R2 FASTQ file (gzipped supported) |
+| `--genome-index` | BWA-indexed reference genome FASTA |
+| `--restriction-sites` | Restriction sites BED file |
+| `--output-dir` | Output directory |
+
+### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--threads` | 24 | Number of threads |
+| `--sample-id` | sample | Sample identifier |
+| `--use-bwa-mem` | False | Use BWA-MEM (recommended) |
+| `--genome-size` | hs | Genome size for MACS3 |
+| `--mapping-quality` | 30 | Minimum mapping quality |
+| `--extension-length` | 500 | Tag extension for clustering |
+| `--ipet-threshold` | 2 | Minimum iPET count for loops |
+| `--fdr-cutoff` | 0.05 | FDR threshold for significance |
+| `--keep-intermediates` | False | Keep intermediate files |
+
+## Step-by-Step Execution
+
+### Full Example with All Options
+
+```bash
+chr3d run --mode hichip \
+    --fastq-r1 /data/H3K27ac_HiChIP_R1.fastq.gz \
+    --fastq-r2 /data/H3K27ac_HiChIP_R2.fastq.gz \
+    --genome-index /ref/hg38.fa \
+    --restriction-sites /ref/hg38_MboI_sites.bed \
+    --output-dir /output/hichip_analysis \
+    --threads 16 \
+    --sample-id H3K27ac_GM12878 \
+    --use-bwa-mem \
+    --genome-size hs \
+    --mapping-quality 30 \
+    --extension-length 500 \
+    --ipet-threshold 2 \
+    --fdr-cutoff 0.05 \
+    --keep-intermediates
+```
+
+## Output Directory Structure
+
+After running the pipeline, your output directory will contain:
+
+```
+output_dir/
+├── step1_linker_filtering/     # Empty (HiChIP skips linker filtering)
+│
+├── step2_mapping/
+│   ├── mapped.sam              # Raw alignment (if --keep-intermediates)
+│   ├── mapped.sorted.bam       # Sorted BAM
+│   ├── mapped.dedup.bedpe      # Deduplicated PETs
+│   └── mapping_stats.txt       # Alignment statistics
+│
+├── step3_purifying/
+│   ├── purified.valid.bedpe    # Valid inter-fragment PETs
+│   └── purified.sameres.bedpe  # Removed same-fragment PETs
+│
+├── step4_categorization/
+│   ├── categorized.ipet        # Inter-ligation PETs (for loops)
+│   ├── categorized.spet        # Self-ligation PETs (for peaks)
+│   └── categorized.opet        # Other PETs
+│
+├── step5_peaks/
+│   ├── peaks_peaks.narrowPeak  # Called peaks
+│   ├── peaks_summits.bed       # Peak summits
+│   └── peaks_peaks.xls         # Peak statistics
+│
+├── step6_loops/
+│   ├── loops.cluster.filtered          # All loops (iPET &gt;= threshold)
+│   └── loops.cluster.FDRfiltered.txt   # Significant loops (FDR &lt; cutoff)
+│
+└── pipeline.log                # Complete pipeline log
+```
+
+## Pipeline Steps Explained
+
+### Step 1: Linker Filtering (SKIPPED)
+
+**Important**: HiChIP does NOT use linker sequences. The CLI automatically skips this step for HiChIP mode.
+
+```
+Log output:
+STEP 1: SKIPPED (HiChIP does not use linkers)
+```
+
+### Step 2: Genomic Mapping
+
+Maps paired-end reads to the reference genome using BWA.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  STEP 2: MAPPING                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  R1.fastq.gz ─┐                                                 │
+│               ├──► BWA-MEM ──► SAM ──► BAM ──► BEDPE            │
+│  R2.fastq.gz ─┘                                                 │
+│                                                                  │
+│  Key operations:                                                 │
+│  • Align reads to reference genome                               │
+│  • Convert SAM to sorted BAM                                     │
+│  • Remove PCR duplicates                                         │
+│  • Generate BEDPE format                                         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Step 3: PET Purifying
+
+Removes same-fragment PETs using restriction site information.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  STEP 3: PURIFYING                                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  For each PET:                                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ Read1 ──────────────────────────────── Read2            │    │
+│  │   │                                       │             │    │
+│  │   ▼                                       ▼             │    │
+│  │ Fragment A                           Fragment B         │    │
+│  │   │                                       │             │    │
+│  │   └───────────── Compare ─────────────────┘             │    │
+│  │                     │                                   │    │
+│  │         ┌───────────┴───────────┐                       │    │
+│  │         ▼                       ▼                       │    │
+│  │   Same Fragment?          Different?                    │    │
+│  │         │                       │                       │    │
+│  │         ▼                       ▼                       │    │
+│  │   REMOVE (artifact)       KEEP (valid)                  │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Step 4: PET Categorization
+
+Classifies PETs based on genomic distance.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  STEP 4: CATEGORIZATION                                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Distance cutoff for HiChIP: 1000bp                              │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                                                          │    │
+│  │  Distance &gt; 1kb?  ──YES──►  iPET (loops)                │    │
+│  │       │                                                  │    │
+│  │      NO                                                  │    │
+│  │       │                                                  │    │
+│  │       ▼                                                  │    │
+│  │  Distance ≤ 1kb?  ──YES──►  sPET (peaks)                │    │
+│  │       │                                                  │    │
+│  │      NO                                                  │    │
+│  │       │                                                  │    │
+│  │       ▼                                                  │    │
+│  │  Invalid?  ───────YES──►  oPET (discard)                │    │
+│  │                                                          │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Step 5: Peak Calling
+
+Calls enrichment peaks from self-ligation PETs using MACS3.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  STEP 5: PEAK CALLING                                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Input: categorized.spet                                         │
+│                                                                  │
+│  MACS3 callpeak:                                                 │
+│  • Genome size: hs (human)                                       │
+│  • Q-value cutoff: 0.05                                          │
+│  • Keep duplicates: all                                          │
+│                                                                  │
+│  Output:                                                         │
+│  • peaks_peaks.narrowPeak (peak coordinates)                     │
+│  • peaks_summits.bed (peak summits)                              │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Step 6: Loop Calling
+
+Identifies significant chromatin loops with statistical testing.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  STEP 6: LOOP CALLING                                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  6.1 Pre-clustering:                                             │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  Extend each tag by 500bp based on strand                │    │
+│  │  Forward (+): extend upstream                            │    │
+│  │  Reverse (-): extend downstream                          │    │
+│  │  Group overlapping tags into clusters                    │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  6.2 Anchor clustering:                                          │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  Merge clusters where BOTH anchors overlap               │    │
+│  │  Iterate until no more merges possible                   │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  6.3 Statistical significance:                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  Distance-corrected Poisson test (HiChIP-specific)       │    │
+│  │  Benjamini-Hochberg FDR correction                       │    │
+│  │  Filter: FDR &lt; 0.05                                      │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Example Log Output
+
+```
+======================================================================
+Chr3D HiChIP Pipeline
+======================================================================
+Sample ID: H3K27ac_GM12878
+Mode: hichip
+Threads: 16
+
+STEP 1: SKIPPED (HiChIP does not use linkers)
+
+======================================================================
+STEP 2: GENOMIC MAPPING
+======================================================================
+Running BWA-MEM alignment...
+  Total read pairs: 100,000,000
+  Mapped pairs: 95,234,567
+  Unique PETs: 78,456,789
+  Duplicate rate: 17.6%
+
+======================================================================
+STEP 3: PET PURIFYING
+======================================================================
+Loading restriction sites...
+  Loaded 1,234,567 MboI fragments
+Processing PETs...
+  Total PETs: 78,456,789
+  Valid PETs: 43,492,345
+  Same-fragment removed: 34,964,444
+  Valid ratio: 55.4%
+
+======================================================================
+STEP 4: PET CATEGORIZATION
+======================================================================
+Categorizing PETs...
+  Total PETs: 43,492,345
+  iPETs: 24,771,234 (57.0%)
+  sPETs: 385,678 (0.9%)
+  oPETs: 18,335,433 (42.1%)
+
+======================================================================
+STEP 5: PEAK CALLING
+======================================================================
+Running MACS3...
+  Peaks called: 45,678
+
+======================================================================
+STEP 6: LOOP CALLING
+======================================================================
+Step 6.1: Pre-clustering...
+  Pre-clusters: 1,234,567
+Step 6.2: Anchor clustering...
+  Anchor clusters: 567,890
+Step 6.3: Statistical significance...
+  Loops tested: 567,890
+  Significant loops (FDR &lt; 0.05): 12,345
+
+======================================================================
+PIPELINE COMPLETE
+======================================================================
+Output directory: /output/hichip_analysis
+Significant loops: /output/hichip_analysis/step6_loops/loops.cluster.FDRfiltered.txt
+```
+
+## Output File Formats
+
+### Loops File (loops.cluster.FDRfiltered.txt)
+
+Tab-separated file with significant chromatin loops:
+
+```
+chr1    100000    100500    chr1    200000    200500    5    2.3    100000    0.001    0.023
+chr1    300000    300500    chr1    450000    450500    8    3.1    150000    0.0001   0.005
+```
+
+| Column | Description |
+|--------|-------------|
+| 1-3 | Anchor 1: chromosome, start, end |
+| 4-6 | Anchor 2: chromosome, start, end |
+| 7 | iPET count (observed) |
+| 8 | Expected count (distance-corrected) |
+| 9 | Distance between anchors |
+| 10 | Raw p-value |
+| 11 | FDR (adjusted p-value) |
+
+### Peaks File (peaks_peaks.narrowPeak)
+
+Standard ENCODE narrowPeak format:
+
+| Column | Description |
+|--------|-------------|
+| 1 | Chromosome |
+| 2 | Start |
+| 3 | End |
+| 4 | Peak name |
+| 5 | Score |
+| 6 | Strand |
+| 7 | Signal value |
+| 8 | -log10(p-value) |
+| 9 | -log10(q-value) |
+| 10 | Peak summit offset |
+
+## Quality Metrics
+
+**Good HiChIP Data:**
+- Mapping rate: &gt;70%
+- Cis ratio: &gt;60%
+- Valid PET ratio: &gt;50%
+- iPET percentage: &gt;40%
+
+**Warning Signs:**
+- Low cis ratio (&lt;40%): May indicate ligation issues
+- High same-fragment rate (&gt;50%): Incomplete digestion
+- Few peaks: Low enrichment or wrong antibody
+
+## Troubleshooting
+
+### No restriction sites file
+
+```bash
+# Generate restriction sites first
+chr3d generate-sites --genome /ref/hg38.fa --enzyme MboI --output /ref/hg38_MboI_sites.bed
+```
+
+### High same-fragment rate
+
+- Check restriction enzyme digestion efficiency
+- Verify restriction sites file matches your enzyme
+- Consider re-digestion or protocol optimization
+
+### No significant loops
+
+- Increase sequencing depth
+- Lower FDR threshold for exploration: `--fdr-cutoff 0.1`
+- Check if peaks are present (loops anchor at peaks)
+
+### Memory issues
+
+- Reduce threads: `--threads 4`
+- Process smaller batches
+- Use `--keep-intermediates` to debug step-by-step
+
+## See Also
+
+- [HiChIP API Tutorial](./hichip-api) - Python API version
+- [HiChIP CLI Reference](../cli/hichip) - Complete CLI documentation
+- [Hi-C CLI Tutorial](./hic-cli) - Hi-C analysis tutorial

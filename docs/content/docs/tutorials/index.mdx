@@ -4,3 +4,146 @@ description: Step-by-step guides for using Chr3D
 ---
 
 # Tutorials
+
+Comprehensive step-by-step tutorials for analyzing 3D chromatin conformation data with Chr3D.
+
+## Tutorial Overview
+
+```mermaid
+flowchart TD
+    subgraph HiChIP["HiChIP Analysis"]
+        HA[HiChIP API Tutorial]
+        HC[HiChIP CLI Tutorial]
+    end
+
+    subgraph HiC["Hi-C Analysis"]
+        IA[Hi-C API Tutorial]
+        IC[Hi-C CLI Tutorial]
+    end
+
+    subgraph ChIAPET["ChIA-PET Analysis"]
+        CA[ChIA-PET Tutorial]
+    end
+
+    FASTQ[FASTQ Files] --> HiChIP
+    FASTQ --> HiC
+    FASTQ --> ChIAPET
+
+    HiChIP --> LOOPS[Loops + Peaks]
+    HiC --> MATRIX[Contact Matrix]
+    ChIAPET --> LOOPS
+
+    style HiChIP fill:#e3f2fd
+    style HiC fill:#fff3e0
+    style ChIAPET fill:#fce4ec
+```
+
+## Choose Your Tutorial
+
+### HiChIP Tutorials
+
+HiChIP (Hi-C + ChIP) captures protein-centric chromatin interactions with low input requirements.
+
+| Tutorial | Description |
+|----------|-------------|
+| [HiChIP API Tutorial](./hichip-api) | Complete Python API walkthrough with mermaid diagrams, ASCII logic explanations, class locations, and output structure |
+| [HiChIP CLI Tutorial](./hichip-cli) | Command-line interface guide with step-by-step execution |
+
+**Key Features:**
+- No linker filtering (HiChIP doesn't use linkers)
+- Restriction fragment-based purification
+- Distance-corrected loop calling
+- Peak calling from sPET
+
+### Hi-C Tutorials
+
+Hi-C captures genome-wide chromatin architecture without protein enrichment.
+
+| Tutorial | Description |
+|----------|-------------|
+| [Hi-C API Tutorial](./hic-api) | Complete Python API walkthrough with pairtools and cooler integration |
+| [Hi-C CLI Tutorial](./hic-cli) | Command-line interface guide for contact matrix generation |
+
+**Key Features:**
+- BWA-MEM alignment with Hi-C parameters
+- pairtools processing pipeline
+- Multi-resolution contact matrices (.mcool)
+- QC statistics generation
+
+### ChIA-PET Tutorial
+
+ChIA-PET uses linker sequences for protein-specific chromatin interaction analysis.
+
+| Tutorial | Description |
+|----------|-------------|
+| [ChIA-PET Tutorial](./chiapet-tutorial) | Basic ChIA-PET analysis workflow |
+
+## Quick Comparison
+
+| Feature | HiChIP | Hi-C | ChIA-PET |
+|---------|--------|------|----------|
+| Linker filtering | No | No | Yes |
+| Restriction sites | Yes | No | No |
+| Peak calling | Yes | No | Yes |
+| Loop calling | Built-in | External tools | Built-in |
+| Output | Loops + Peaks | Contact matrix | Loops + Peaks |
+| Input cells | ~1M | 1-10M | ~100M |
+
+## What You'll Learn
+
+Each detailed tutorial covers:
+
+1. **Pipeline Overview** - Mermaid flowcharts showing the complete workflow
+2. **Source Code Locations** - Where each class is defined in the codebase
+3. **Output Directory Structure** - What files are generated and where
+4. **Step-by-Step Code** - Complete working examples
+5. **ASCII Diagrams** - Visual explanations of algorithms and logic
+6. **Expected Output** - Sample log output and statistics
+7. **File Formats** - Detailed format specifications
+8. **Troubleshooting** - Common issues and solutions
+
+## Getting Started
+
+### For HiChIP Analysis
+
+```bash
+# CLI approach
+chr3d run --mode hichip \
+    --fastq-r1 sample_R1.fastq.gz \
+    --fastq-r2 sample_R2.fastq.gz \
+    --genome-index /ref/hg38.fa \
+    --restriction-sites /ref/hg38_MboI_sites.bed \
+    --output-dir ./output
+```
+
+```python
+# API approach
+from chr3d.mapping_v2 import PETMapper
+from chr3d.hichip_purifying import HiChIPPurifier
+# ... see full tutorial
+```
+
+### For Hi-C Analysis
+
+```bash
+# CLI approach
+chr3d run --mode hic \
+    --fastq-r1 sample_R1.fastq.gz \
+    --fastq-r2 sample_R2.fastq.gz \
+    --genome-index /ref/hg38.fa \
+    --chrom-sizes /ref/hg38.chrom.sizes \
+    --output-dir ./output
+```
+
+```python
+# API approach
+from chr3d.bulk_hic import HiCPipeline
+pipeline = HiCPipeline(...)
+# ... see full tutorial
+```
+
+## See Also
+
+- [CLI Reference](../cli) - Complete command-line documentation
+- [API Reference](../api) - Python API documentation
+- [Installation Guide](../getting-started) - Setup instructions

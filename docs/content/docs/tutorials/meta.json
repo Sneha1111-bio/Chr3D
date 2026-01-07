@@ -1,4 +1,4 @@
 {
   "title": "Tutorials",
-  "pages": ["index", "chiapet-tutorial", "hichip-tutorial", "hic-tutorial"]
+  "pages": ["index", "hichip-api", "hichip-cli", "hic-api", "hic-cli", "chiapet-tutorial", "hichip-tutorial", "hic-tutorial"]
 }
