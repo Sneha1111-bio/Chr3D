@@ -1,0 +1,52 @@
+```
+graph TD
+    %% Global Inputs
+    Input[Raw Sequencing Data] --> FastQ[FastQ Files]
+    
+    %% Step 1: Assay-Specific Preprocessing
+    subgraph Preprocessing [Assay-Specific Processing]
+        direction TB
+        FastQ --> Check{Assay Type?}
+        
+        %% ChIA-PET Route: Linker Filtering
+        Check -- ChIA-PET --> Linker[Linker Detection & Filtering]
+        Linker --> Align1[Alignment]
+        
+        %% HiChIP Route: Restriction Fragments
+        Check -- HiChIP --> Restrict[Generate Restriction Fragments]
+        Restrict --> Align2[Alignment & Assign Fragments]
+        
+        %% Hi-C Route: Standard
+        Check -- Hi-C --> Align3[Alignment & Pair Decoding]
+    end
+
+    %% Step 2: The Core Method Split
+    Align1 --> PeakLogic
+    Align2 --> PeakLogic
+    Align3 --> NonPeakLogic
+
+    %% Analysis Logic
+    subgraph Analysis [Core Analysis Modules]
+        %% Peak-Based Workflow (HiChIP / ChIA-PET)
+        PeakLogic{"Peak-Based?"}
+        PeakLogic -- Yes --> CallPeaks["Call Peaks (MACS2)"]
+        CallPeaks --> Loops[Loop Calling]
+        Loops --> Network[Interaction Network]
+
+        %% Non-Peak Workflow (Hi-C)
+        NonPeakLogic{"Non-Peak?"}
+        NonPeakLogic -- Yes --> Matrix[Generate Cooler Matrix]
+        Matrix --> Tads[Call TADs & Compartments]
+    end
+
+    %% Visualization (Unified)
+    Network --> Viz[Visualization Module]
+    Tads --> Viz
+    
+    %% Styling for clarity
+    style Preprocessing fill:#f9f9f9,stroke:#333,stroke-width:2px
+    style Analysis fill:#e1f5fe,stroke:#333,stroke-width:2px
+    style Linker fill:#ffcccb,stroke:#333
+    style Restrict fill:#ffcccb,stroke:#333
+
+```

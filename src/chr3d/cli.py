@@ -409,36 +409,64 @@ def _run_hic_pipeline(args, output_dir: Path):
         return 1
 
 
+def _write_step_qc(qc_dir: Path, step_name: str, step_num: str, stats: dict, sample_id: str):
+    """Write QC stats for a single step."""
+    qc_file = qc_dir / f'{sample_id}_{step_num}_{step_name}_qc.txt'
+    with open(qc_file, 'w') as f:
+        f.write(f"{'=' * 50}\n")
+        f.write(f"Step {step_num}: {step_name.upper()} QC\n")
+        f.write(f"{'=' * 50}\n")
+        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        for key, value in stats.items():
+            if isinstance(value, dict):
+                f.write(f"{key}:\n")
+                for k, v in value.items():
+                    f.write(f"  {k}: {v}\n")
+            else:
+                f.write(f"{key}: {value}\n")
+        f.write(f"{'=' * 50}\n")
+    return qc_file
+
+
 def _run_chiapet_hichip_pipeline(args, output_dir: Path):
     """Run ChIA-PET or HiChIP analysis pipeline."""
     logger.info("\n" + "=" * 70)
     logger.info(f"{args.mode.upper()} PIPELINE")
     logger.info("=" * 70)
     
-    # Set up step-specific output directories
-    step_dirs = {
-        'step2': output_dir / 'step2_mapping',
-        'step3': output_dir / 'step3_purifying',
-        'step4': output_dir / 'step4_categorization',
-        'step5': output_dir / 'step5_peaks',
-        'step6': output_dir / 'step6_loops',
-        'qc': output_dir / 'qc'
-    }
-    
-    # Only create step1 for ChIA-PET mode
-    if args.mode == 'chiapet':
-        step_dirs['step1'] = output_dir / 'step1_linker_filtering'
+    # Set up step-specific output directories with proper numbering
+    # HiChIP: step01=mapping (no linker filtering)
+    # ChIA-PET: step01=linker_filtering, step02=mapping, etc.
+    if args.mode == 'hichip':
+        step_dirs = {
+            'mapping': output_dir / 'step01_mapping',
+            'purifying': output_dir / 'step02_purifying',
+            'categorization': output_dir / 'step03_categorization',
+            'peaks': output_dir / 'step04_peaks',
+            'loops': output_dir / 'step05_loops',
+            'qc': output_dir / 'qc'
+        }
+    else:  # chiapet
+        step_dirs = {
+            'linker_filtering': output_dir / 'step01_linker_filtering',
+            'mapping': output_dir / 'step02_mapping',
+            'purifying': output_dir / 'step03_purifying',
+            'categorization': output_dir / 'step04_categorization',
+            'peaks': output_dir / 'step05_peaks',
+            'loops': output_dir / 'step06_loops',
+            'qc': output_dir / 'qc'
+        }
     
     for d in step_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Step 1: Linker Filtering (ChIA-PET only - HiChIP does NOT use linkers)
+        # Step 1 for ChIA-PET: Linker Filtering (HiChIP skips this)
         if args.mode == 'chiapet' and args.linker_a:
             from .linker_filtering_v3 import LinkerFilterV3
             
             logger.info("\n" + "=" * 70)
-            logger.info("STEP 1: LINKER FILTERING (ChIA-PET)")
+            logger.info("STEP 01: LINKER FILTERING (ChIA-PET)")
             logger.info("=" * 70)
             
             linkers = [args.linker_a]
@@ -454,25 +482,27 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 fastq_r1=args.fastq_r1,
                 fastq_r2=args.fastq_r2,
                 output_prefix='filtered',
-                output_dir=str(step_dirs['step1'])
+                output_dir=str(step_dirs['linker_filtering'])
             )
             
+            # Write QC for linker filtering
+            _write_step_qc(step_dirs['qc'], 'linker_filtering', '01', linker_stats, args.sample_id)
+            logger.info(f"  QC written to: {step_dirs['qc']}")
+            
             # Use filtered files for next step
-            fastq_r1 = str(step_dirs['step1'] / 'filtered.1_1.R1.fastq')
-            fastq_r2 = str(step_dirs['step1'] / 'filtered.1_1.R2.fastq')
+            fastq_r1 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R1.fastq')
+            fastq_r2 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R2.fastq')
         else:
             # HiChIP uses original FASTQs directly (no linker filtering needed)
-            logger.info("\n" + "=" * 70)
-            logger.info("STEP 1: SKIPPED (HiChIP does not use linkers)")
-            logger.info("=" * 70)
             fastq_r1 = args.fastq_r1
             fastq_r2 = args.fastq_r2
         
-        # Step 2: Mapping
+        # Mapping step
         from .mapping_v2 import PETMapper
         
+        step_num = '01' if args.mode == 'hichip' else '02'
         logger.info("\n" + "=" * 70)
-        logger.info("STEP 2: GENOMIC MAPPING")
+        logger.info(f"STEP {step_num}: GENOMIC MAPPING")
         logger.info("=" * 70)
         
         # Use BWA-MEM by default, unless --use-bwa-aln is specified
@@ -490,55 +520,70 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             fastq_r1=fastq_r1,
             fastq_r2=fastq_r2,
             output_prefix='mapped',
-            output_dir=str(step_dirs['step2'])
+            output_dir=str(step_dirs['mapping'])
         )
         
-        bedpe_file = str(step_dirs['step2'] / 'mapped.dedup.bedpe')
+        # Write QC for mapping
+        _write_step_qc(step_dirs['qc'], 'mapping', step_num, map_stats, args.sample_id)
+        logger.info(f"  QC written to: {step_dirs['qc']}")
         
-        # Step 3: Purifying
+        bedpe_file = str(step_dirs['mapping'] / 'mapped.dedup.bedpe')
+        
+        # Purifying step
+        step_num = '02' if args.mode == 'hichip' else '03'
         logger.info("\n" + "=" * 70)
-        logger.info("STEP 3: PET PURIFYING")
+        logger.info(f"STEP {step_num}: PET PURIFYING")
         logger.info("=" * 70)
         
         if args.mode == 'chiapet':
             from .chiapet_purifying import ChIAPETPurifier
             
             purifier = ChIAPETPurifier(merge_distance=2)
-            purify_stats = purifier.purify(bedpe_file, str(step_dirs['step3'] / 'purified'))
-            purified_bedpe = str(step_dirs['step3'] / 'purified.merged.bedpe')
+            purify_stats = purifier.purify(bedpe_file, str(step_dirs['purifying'] / 'purified'))
+            purified_bedpe = str(step_dirs['purifying'] / 'purified.merged.bedpe')
         else:
             from .hichip_purifying import HiChIPPurifier
             
             purifier = HiChIPPurifier(restriction_file=args.restriction_sites)
             purify_stats = purifier.remove_same_fragment_pets(
                 bedpe_file,
-                str(step_dirs['step3'] / 'purified.valid.bedpe'),
-                str(step_dirs['step3'] / 'purified.sameres.bedpe')
+                str(step_dirs['purifying'] / 'purified.valid.bedpe'),
+                str(step_dirs['purifying'] / 'purified.sameres.bedpe')
             )
-            purified_bedpe = str(step_dirs['step3'] / 'purified.valid.bedpe')
+            purified_bedpe = str(step_dirs['purifying'] / 'purified.valid.bedpe')
         
-        # Step 4: Categorization
+        # Write QC for purifying
+        _write_step_qc(step_dirs['qc'], 'purifying', step_num, purify_stats, args.sample_id)
+        logger.info(f"  QC written to: {step_dirs['qc']}")
+        
+        # Categorization step
         from .pet_categorization import PETCategorizer
         
+        step_num = '03' if args.mode == 'hichip' else '04'
         logger.info("\n" + "=" * 70)
-        logger.info("STEP 4: PET CATEGORIZATION")
+        logger.info(f"STEP {step_num}: PET CATEGORIZATION")
         logger.info("=" * 70)
         
         cutoff = args.self_ligation_cutoff if args.mode == 'chiapet' else 1000
         categorizer = PETCategorizer(self_ligation_cutoff=cutoff, mode=args.mode)
         cat_stats = categorizer.categorize_bedpe(
             purified_bedpe,
-            str(step_dirs['step4'] / 'categorized')
+            str(step_dirs['categorization'] / 'categorized')
         )
         
-        ipet_file = str(step_dirs['step4'] / 'categorized.ipet')
-        spet_file = str(step_dirs['step4'] / 'categorized.spet')
+        # Write QC for categorization
+        _write_step_qc(step_dirs['qc'], 'categorization', step_num, cat_stats, args.sample_id)
+        logger.info(f"  QC written to: {step_dirs['qc']}")
         
-        # Step 5: Peak Calling
+        ipet_file = str(step_dirs['categorization'] / 'categorized.ipet')
+        spet_file = str(step_dirs['categorization'] / 'categorized.spet')
+        
+        # Peak Calling step
         from .peak_calling import PeakCaller
         
+        step_num = '04' if args.mode == 'hichip' else '05'
         logger.info("\n" + "=" * 70)
-        logger.info("STEP 5: PEAK CALLING")
+        logger.info(f"STEP {step_num}: PEAK CALLING")
         logger.info("=" * 70)
         
         peak_caller = PeakCaller(
@@ -548,28 +593,33 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
         )
         peak_stats = peak_caller.call_peaks(
             spet_file,
-            str(step_dirs['step5'] / 'peaks')
+            str(step_dirs['peaks'] / 'peaks')
         )
         
-        # Step 6: Loop Calling
+        # Write QC for peak calling
+        _write_step_qc(step_dirs['qc'], 'peaks', step_num, peak_stats, args.sample_id)
+        logger.info(f"  QC written to: {step_dirs['qc']}")
+        
+        # Loop Calling step
         from .loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
         
+        step_num = '05' if args.mode == 'hichip' else '06'
         logger.info("\n" + "=" * 70)
-        logger.info("STEP 6: LOOP CALLING")
+        logger.info(f"STEP {step_num}: LOOP CALLING")
         logger.info("=" * 70)
         
         # 6.1 Pre-clustering
         pre_clusterer = PreClusterer(extension_length=args.extension_length)
         precluster_stats = pre_clusterer.pre_cluster(
             ipet_file,
-            str(step_dirs['step6'] / 'preclustered')
+            str(step_dirs['loops'] / 'preclustered')
         )
         
         # 6.2 Anchor clustering
         anchor_clusterer = AnchorClusterer()
         cluster_stats = anchor_clusterer.cluster_anchors(
             precluster_stats['output_file'],
-            str(step_dirs['step6'] / 'clusters.txt')
+            str(step_dirs['loops'] / 'clusters.txt')
         )
         
         # 6.3 Statistical significance
@@ -579,10 +629,19 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             extension_length=args.extension_length
         )
         sig_stats = stat_sig.calculate_significance(
-            str(step_dirs['step6'] / 'clusters.txt'),
+            str(step_dirs['loops'] / 'clusters.txt'),
             ipet_file,
-            str(step_dirs['step6'] / 'loops')
+            str(step_dirs['loops'] / 'loops')
         )
+        
+        # Write QC for loop calling
+        loop_qc = {
+            'precluster': precluster_stats,
+            'anchor_cluster': cluster_stats,
+            'significance': sig_stats
+        }
+        _write_step_qc(step_dirs['qc'], 'loops', step_num, loop_qc, args.sample_id)
+        logger.info(f"  QC written to: {step_dirs['qc']}")
         
         # Cleanup intermediate files if requested
         if not args.keep_intermediates:
@@ -593,31 +652,29 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             import shutil
             cleanup_patterns = []
             
-            # Step 1: Linker filtered files (keep only final outputs)
-            if step_dirs['step1'].exists():
-                for f in step_dirs['step1'].glob('*.fastq'):
+            # Linker filtered files (ChIA-PET only)
+            if 'linker_filtering' in step_dirs and step_dirs['linker_filtering'].exists():
+                for f in step_dirs['linker_filtering'].glob('*.fastq'):
                     cleanup_patterns.append(f)
                 logger.info(f"  Removing linker-filtered FASTQ files...")
             
-            # Step 2: SAM files, unsorted BAM files
-            if step_dirs['step2'].exists():
+            # SAM files, unsorted BAM files
+            if step_dirs['mapping'].exists():
                 for pattern in ['*.sam', '*_unsorted.bam', '*.sai']:
-                    for f in step_dirs['step2'].glob(pattern):
+                    for f in step_dirs['mapping'].glob(pattern):
                         cleanup_patterns.append(f)
                 logger.info(f"  Removing SAM/BAM intermediate files...")
             
-            # Step 3: Intermediate purification files
-            if step_dirs['step3'].exists():
-                for f in step_dirs['step3'].glob('*.sameres.bedpe'):
+            # Intermediate purification files
+            if step_dirs['purifying'].exists():
+                for f in step_dirs['purifying'].glob('*.sameres.bedpe'):
                     cleanup_patterns.append(f)
                 logger.info(f"  Removing purification intermediates...")
             
-            # Step 4: Keep categorized files (iPET, sPET, oPET)
-            # Step 5: Keep peak files
-            # Step 6: Keep only final filtered loops, remove intermediates
-            if step_dirs['step6'].exists():
+            # Loop calling intermediates
+            if step_dirs['loops'].exists():
                 for pattern in ['*.pre_cluster', '*.pre_cluster.sorted', 'clusters.txt']:
-                    for f in step_dirs['step6'].glob(pattern):
+                    for f in step_dirs['loops'].glob(pattern):
                         cleanup_patterns.append(f)
                 logger.info(f"  Removing loop calling intermediates...")
             
@@ -739,8 +796,8 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
         logger.info(f"\nFinal outputs:")
         logger.info(f"  iPET file: {ipet_file}")
         logger.info(f"  sPET file: {spet_file}")
-        logger.info(f"  Peaks: {step_dirs['step5'] / 'peaks_peaks.narrowPeak'}")
-        logger.info(f"  Loops: {step_dirs['step6'] / 'loops.cluster.FDRfiltered.txt'}")
+        logger.info(f"  Peaks: {step_dirs['peaks'] / 'peaks_peaks.narrowPeak'}")
+        logger.info(f"  Loops: {step_dirs['loops'] / 'loops.cluster.FDRfiltered.txt'}")
         logger.info(f"  QC Summary: {qc_file}")
         logger.info(f"\nSummary:")
         logger.info(f"  Total PETs: {cat_stats['total']:,}")
