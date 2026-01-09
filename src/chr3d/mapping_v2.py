@@ -494,9 +494,14 @@ class PETMapper:
                 )
         
         logger.info(f"✓ BEDPE generation complete: {output_bedpe}")
-        logger.info(f"  Valid pairs: {stats['valid_pairs']}")
-        logger.info(f"  Intra-chromosomal: {stats['intra_chromosomal']}")
-        logger.info(f"  Inter-chromosomal: {stats['inter_chromosomal']}")
+        logger.info(f"  Total read groups: {stats.get('total_read_groups', 0)}")
+        logger.info(f"  Unpaired (< 2 alignments): {stats.get('unpaired', 0)}")
+        logger.info(f"  Unmapped (missing R1 or R2): {stats.get('unmapped', 0)}")
+        logger.info(f"  Low quality: {stats.get('low_quality', 0)}")
+        logger.info(f"  Not properly paired: {stats.get('not_properly_paired', 0)}")
+        logger.info(f"  Valid pairs: {stats.get('valid_pairs', 0)}")
+        logger.info(f"  Intra-chromosomal: {stats.get('intra_chromosomal', 0)}")
+        logger.info(f"  Inter-chromosomal: {stats.get('inter_chromosomal', 0)}")
         
         return dict(stats)
     

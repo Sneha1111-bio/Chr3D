@@ -209,6 +209,19 @@ class PETCategorizer:
         
         logger.info(f"Loaded {len(df):,} chromatin interactions")
         
+        # Handle empty DataFrame
+        if len(df) == 0:
+            logger.warning("No PETs to categorize - input file is empty")
+            return {
+                'total': 0,
+                'ipet': 0,
+                'spet': 0,
+                'opet': 0,
+                'cis': 0,
+                'trans': 0,
+                'subtypes': {}
+            }
+        
         # Calculate distances
         logger.info("Calculating distances...")
         df['distance'] = df.apply(self.calculate_distance, axis=1)
