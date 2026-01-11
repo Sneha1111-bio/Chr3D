@@ -1,7 +1,7 @@
 // @ts-nocheck
-import { default as __fd_glob_29 } from "../content/docs/tutorials/meta.json?collection=docs"
-import { default as __fd_glob_28 } from "../content/docs/getting-started/meta.json?collection=docs"
-import { default as __fd_glob_27 } from "../content/docs/guides/meta.json?collection=docs"
+import { default as __fd_glob_29 } from "../content/docs/guides/meta.json?collection=docs"
+import { default as __fd_glob_28 } from "../content/docs/tutorials/meta.json?collection=docs"
+import { default as __fd_glob_27 } from "../content/docs/getting-started/meta.json?collection=docs"
 import { default as __fd_glob_26 } from "../content/docs/cli/meta.json?collection=docs"
 import { default as __fd_glob_25 } from "../content/docs/api/meta.json?collection=docs"
 import * as __fd_glob_24 from "../content/docs/tutorials/index.mdx?collection=docs"
@@ -37,4 +37,4 @@ const create = server<typeof Config, import("fumadocs-mdx/runtime/types").Intern
   }
 }>({"doc":{"passthroughs":["extractedReferences"]}});
 
-export const docs = await create.docs("docs", "content/docs", {"api/meta.json": __fd_glob_25, "cli/meta.json": __fd_glob_26, "guides/meta.json": __fd_glob_27, "getting-started/meta.json": __fd_glob_28, "tutorials/meta.json": __fd_glob_29, }, {"benchmarks.mdx": __fd_glob_0, "comparison.mdx": __fd_glob_1, "faq.mdx": __fd_glob_2, "api/chiapet.mdx": __fd_glob_3, "api/hic.mdx": __fd_glob_4, "api/hichip.mdx": __fd_glob_5, "api/index.mdx": __fd_glob_6, "api/utils.mdx": __fd_glob_7, "cli/chiapet.mdx": __fd_glob_8, "cli/hic.mdx": __fd_glob_9, "cli/hichip.mdx": __fd_glob_10, "cli/index.mdx": __fd_glob_11, "getting-started/concepts.mdx": __fd_glob_12, "getting-started/index.mdx": __fd_glob_13, "getting-started/installation.mdx": __fd_glob_14, "getting-started/quickstart.mdx": __fd_glob_15, "guides/loop-calling.mdx": __fd_glob_16, "guides/matrix-generation.mdx": __fd_glob_17, "guides/quality-control.mdx": __fd_glob_18, "guides/restriction-fragments.mdx": __fd_glob_19, "tutorials/hic-api.mdx": __fd_glob_20, "tutorials/hic-cli.mdx": __fd_glob_21, "tutorials/hichip-api.mdx": __fd_glob_22, "tutorials/hichip-cli.mdx": __fd_glob_23, "tutorials/index.mdx": __fd_glob_24, });
+export const docs = await create.docs("docs", "content/docs", {"api/meta.json": __fd_glob_25, "cli/meta.json": __fd_glob_26, "getting-started/meta.json": __fd_glob_27, "tutorials/meta.json": __fd_glob_28, "guides/meta.json": __fd_glob_29, }, {"benchmarks.mdx": __fd_glob_0, "comparison.mdx": __fd_glob_1, "faq.mdx": __fd_glob_2, "api/chiapet.mdx": __fd_glob_3, "api/hic.mdx": __fd_glob_4, "api/hichip.mdx": __fd_glob_5, "api/index.mdx": __fd_glob_6, "api/utils.mdx": __fd_glob_7, "cli/chiapet.mdx": __fd_glob_8, "cli/hic.mdx": __fd_glob_9, "cli/hichip.mdx": __fd_glob_10, "cli/index.mdx": __fd_glob_11, "getting-started/concepts.mdx": __fd_glob_12, "getting-started/index.mdx": __fd_glob_13, "getting-started/installation.mdx": __fd_glob_14, "getting-started/quickstart.mdx": __fd_glob_15, "guides/loop-calling.mdx": __fd_glob_16, "guides/matrix-generation.mdx": __fd_glob_17, "guides/quality-control.mdx": __fd_glob_18, "guides/restriction-fragments.mdx": __fd_glob_19, "tutorials/hic-api.mdx": __fd_glob_20, "tutorials/hic-cli.mdx": __fd_glob_21, "tutorials/hichip-api.mdx": __fd_glob_22, "tutorials/hichip-cli.mdx": __fd_glob_23, "tutorials/index.mdx": __fd_glob_24, });

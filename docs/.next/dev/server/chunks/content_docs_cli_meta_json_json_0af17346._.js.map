@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 3, "column": 0}, "map": {"version":3,"sources":["turbopack:///[project]/content/docs/cli/meta.json.json"],"sourcesContent":["{\"title\":\"Command Line Interface\",\"pages\":[\"index\",\"chiapet\",\"hichip\",\"hic\"],\"description\":\"Chr3D command-line interface documentation\"}"],"names":[],"mappings":"AAAA"}},
+    {"offset": {"line": 3, "column": 162}, "map": {"version":3,"sources":[],"names":[],"mappings":"A"}}]
+}

@@ -27,9 +27,12 @@ import subprocess
 import logging
 import glob
 import gzip
+import shutil
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
+from datetime import datetime
 
 # Setup logging
 logging.basicConfig(
@@ -62,6 +65,19 @@ def _check_tool(tool: str) -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def _format_duration(seconds: float) -> str:
+    """Format duration in seconds to human readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f} seconds"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        return f"{minutes:.1f} minutes ({seconds:.0f}s)"
+    else:
+        hours = seconds / 3600
+        minutes = (seconds % 3600) / 60
+        return f"{hours:.1f} hours ({int(hours)}h {int(minutes)}m)"
 
 
 class FastqSplitter:
@@ -1090,15 +1106,21 @@ class HiCPipeline:
             {input_bam}"""
         self._run_command(cmd)
         
-        # Sort pairs
+        # Sort pairs (use pairs_dir as temp directory to keep all temp files in output)
         logger.info("  Sorting pairs...")
+        temp_sort_dir = os.path.join(pairs_dir, 'temp_sort')
+        os.makedirs(temp_sort_dir, exist_ok=True)
         cmd = f"""pairtools sort \
-            --tmpdir {pairs_dir} \
+            --tmpdir {temp_sort_dir} \
             --nproc-in {self.threads} \
             --nproc-out {self.threads} \
             --output {sorted_pairs} \
             {temp_pairs}"""
         self._run_command(cmd)
+        
+        # Clean up temp sort directory
+        if os.path.exists(temp_sort_dir):
+            shutil.rmtree(temp_sort_dir)
         
         # Remove duplicates
         logger.info("  Removing duplicates...")
@@ -1237,7 +1259,45 @@ class HiCPipeline:
             
         Returns:
             Dictionary with all pipeline statistics
+            
+        Output Directory Structure:
+            output_dir/
+            ├── aligned/                     # (empty after processing - SAM always deleted)
+            ├── processed/
+            │   └── {sample_id}_sorted.bam   # Sorted BAM (KEPT)
+            ├── pairs/
+            │   ├── {sample_id}.sorted.pairs.gz   # Sorted pairs (KEPT)
+            │   ├── {sample_id}.dedup.pairs.gz    # Deduplicated pairs (deleted if cleanup=True)
+            │   └── {sample_id}.filtered.pairs.gz # Filtered pairs (KEPT)
+            ├── matrices/
+            │   ├── {sample_id}.cool         # Contact matrix at 1kb (KEPT)
+            │   └── {sample_id}.mcool        # Multi-resolution matrix (KEPT)
+            └── qc/
+                ├── {sample_id}_system_config.txt  # System configuration
+                ├── {sample_id}_timing.txt         # Step timing summary
+                ├── {sample_id}_alignment.stats
+                ├── {sample_id}_bam.stats
+                ├── {sample_id}_pairs.stats
+                ├── {sample_id}_dedup.stats
+                └── {sample_id}_matrix_*.stats
+                
+        Files ALWAYS deleted (regardless of cleanup flag):
+            - aligned/{sample_id}.sam (large, BAM is kept and can convert back)
+            - pairs/{sample_id}.temp.pairs.gz (temporary)
+            
+        Files deleted only when cleanup=True:
+            - pairs/{sample_id}.dedup.pairs.gz
+            
+        Files always kept:
+            - processed/{sample_id}_sorted.bam (can convert to SAM: samtools view -h)
+            - pairs/{sample_id}.sorted.pairs.gz
+            - pairs/{sample_id}.filtered.pairs.gz
+            - matrices/{sample_id}.cool
+            - matrices/{sample_id}.mcool
+            - All QC stats files
         """
+        pipeline_start_time = time.time()
+        
         logger.info("=" * 70)
         logger.info("BULK Hi-C PIPELINE")
         logger.info("=" * 70)
@@ -1245,6 +1305,8 @@ class HiCPipeline:
         logger.info(f"FASTQ R1: {fastq1}")
         logger.info(f"FASTQ R2: {fastq2}")
         logger.info(f"Output: {output_dir}")
+        logger.info(f"Threads: {self.threads}")
+        logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         # Validate FASTQ files
         if not os.path.exists(fastq1):
@@ -1252,63 +1314,229 @@ class HiCPipeline:
         if not os.path.exists(fastq2):
             raise ValueError(f"FASTQ R2 not found: {fastq2}")
         
-        # Create output directory
+        # Create output directory and QC directory
         os.makedirs(output_dir, exist_ok=True)
+        qc_dir = os.path.join(output_dir, 'qc')
+        os.makedirs(qc_dir, exist_ok=True)
+        
+        # Save system configuration
+        try:
+            from .system_info import get_system_info, format_system_info
+            system_info = get_system_info()
+            system_info_file = os.path.join(qc_dir, f'{sample_id}_system_config.txt')
+            with open(system_info_file, 'w') as f:
+                f.write(format_system_info(system_info))
+            logger.info(f"System configuration saved to: {system_info_file}")
+        except Exception as e:
+            logger.warning(f"Could not save system info: {e}")
+        
+        # Initialize timing tracker
+        timing = {}
         
         all_stats = {
             'sample_id': sample_id,
             'fastq1': fastq1,
             'fastq2': fastq2,
-            'output_dir': output_dir
+            'output_dir': output_dir,
+            'threads': self.threads,
+            'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
         
         # Step 1: Alignment
+        step1_start = time.time()
         align_stats = self.align(fastq1, fastq2, output_dir, sample_id)
+        step1_duration = time.time() - step1_start
+        timing['step1_alignment'] = step1_duration
+        align_stats['duration_seconds'] = step1_duration
+        align_stats['duration_formatted'] = _format_duration(step1_duration)
         all_stats['alignment'] = align_stats
+        logger.info(f"  Step 1 completed in: {_format_duration(step1_duration)}")
         
         # Step 2: SAM/BAM processing
+        step2_start = time.time()
         sam_stats = self.process_sam(align_stats['output_sam'], output_dir, sample_id)
+        step2_duration = time.time() - step2_start
+        timing['step2_sam_processing'] = step2_duration
+        sam_stats['duration_seconds'] = step2_duration
+        sam_stats['duration_formatted'] = _format_duration(step2_duration)
         all_stats['sam_processing'] = sam_stats
+        logger.info(f"  Step 2 completed in: {_format_duration(step2_duration)}")
         
         # Step 3: Pairs processing
+        step3_start = time.time()
         pairs_stats = self.process_pairs(sam_stats['sorted_bam'], output_dir, sample_id)
+        step3_duration = time.time() - step3_start
+        timing['step3_pairs_processing'] = step3_duration
+        pairs_stats['duration_seconds'] = step3_duration
+        pairs_stats['duration_formatted'] = _format_duration(step3_duration)
         all_stats['pairs_processing'] = pairs_stats
+        logger.info(f"  Step 3 completed in: {_format_duration(step3_duration)}")
         
         # Step 4: Contact matrix
+        step4_start = time.time()
         matrix_stats = self.create_contact_matrix(
             pairs_stats['filtered_pairs'], output_dir, sample_id
         )
+        step4_duration = time.time() - step4_start
+        timing['step4_contact_matrix'] = step4_duration
+        matrix_stats['duration_seconds'] = step4_duration
+        matrix_stats['duration_formatted'] = _format_duration(step4_duration)
         all_stats['contact_matrix'] = matrix_stats
+        logger.info(f"  Step 4 completed in: {_format_duration(step4_duration)}")
         
-        # Cleanup if requested
+        # Calculate total time
+        total_duration = time.time() - pipeline_start_time
+        timing['total'] = total_duration
+        all_stats['timing'] = timing
+        all_stats['end_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        all_stats['total_duration_seconds'] = total_duration
+        all_stats['total_duration_formatted'] = _format_duration(total_duration)
+        
+        # Always delete SAM file (large, can be regenerated from BAM via samtools view)
+        # SAM is deleted regardless of cleanup flag since BAM is kept
+        sam_file = os.path.join(output_dir, 'aligned', f'{sample_id}.sam')
+        deleted_files = []
+        if os.path.exists(sam_file):
+            os.remove(sam_file)
+            deleted_files.append(sam_file)
+            logger.info(f"Removed SAM file (BAM is kept): {sam_file}")
+        
+        # Additional cleanup if requested (removes dedup.pairs.gz)
         if cleanup:
-            self._cleanup(output_dir, sample_id)
+            extra_deleted = self._cleanup(output_dir, sample_id)
+            deleted_files.extend(extra_deleted)
+        
+        all_stats['deleted_files'] = deleted_files
+        
+        # Document final output files
+        final_outputs = {
+            'sorted_bam': os.path.join(output_dir, 'processed', f'{sample_id}_sorted.bam'),
+            'sorted_pairs': os.path.join(output_dir, 'pairs', f'{sample_id}.sorted.pairs.gz'),
+            'filtered_pairs': os.path.join(output_dir, 'pairs', f'{sample_id}.filtered.pairs.gz'),
+            'cool_matrix': os.path.join(output_dir, 'matrices', f'{sample_id}.cool'),
+            'mcool_matrix': os.path.join(output_dir, 'matrices', f'{sample_id}.mcool'),
+        }
+        all_stats['final_outputs'] = final_outputs
+        
+        # Save timing summary to QC directory
+        timing_file = os.path.join(qc_dir, f'{sample_id}_timing.txt')
+        with open(timing_file, 'w') as f:
+            f.write("=" * 70 + "\n")
+            f.write("HI-C PIPELINE TIMING SUMMARY\n")
+            f.write("=" * 70 + "\n")
+            f.write(f"Sample: {sample_id}\n")
+            f.write(f"Start time: {all_stats['start_time']}\n")
+            f.write(f"End time: {all_stats['end_time']}\n")
+            f.write(f"Threads: {self.threads}\n")
+            f.write("\n" + "-" * 70 + "\n")
+            f.write("STEP TIMING\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"Step 1 - BWA MEM Alignment:    {_format_duration(timing['step1_alignment']):>25}\n")
+            f.write(f"Step 2 - SAM/BAM Processing:   {_format_duration(timing['step2_sam_processing']):>25}\n")
+            f.write(f"Step 3 - Pairs Processing:     {_format_duration(timing['step3_pairs_processing']):>25}\n")
+            f.write(f"Step 4 - Contact Matrix:       {_format_duration(timing['step4_contact_matrix']):>25}\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"TOTAL:                         {_format_duration(timing['total']):>25}\n")
+            f.write("=" * 70 + "\n")
+        logger.info(f"Timing summary saved to: {timing_file}")
         
         logger.info("=" * 70)
         logger.info("PIPELINE COMPLETE")
         logger.info("=" * 70)
         logger.info(f"Sample: {sample_id}")
         logger.info(f"Output directory: {output_dir}")
-        logger.info(f"Contact matrix: {matrix_stats['mcool_file']}")
+        logger.info(f"End time: {all_stats['end_time']}")
+        
+        logger.info(f"\nTiming Summary:")
+        logger.info(f"  Step 1 (Alignment):      {_format_duration(timing['step1_alignment'])}")
+        logger.info(f"  Step 2 (SAM/BAM):        {_format_duration(timing['step2_sam_processing'])}")
+        logger.info(f"  Step 3 (Pairs):          {_format_duration(timing['step3_pairs_processing'])}")
+        logger.info(f"  Step 4 (Contact Matrix): {_format_duration(timing['step4_contact_matrix'])}")
+        logger.info(f"  TOTAL:                   {_format_duration(timing['total'])}")
+        
+        logger.info(f"\nFinal output files (always kept):")
+        logger.info(f"  Sorted BAM: {final_outputs['sorted_bam']}")
+        logger.info(f"  Sorted pairs: {final_outputs['sorted_pairs']}")
+        logger.info(f"  Filtered pairs: {final_outputs['filtered_pairs']}")
+        logger.info(f"  Contact matrix (.cool): {final_outputs['cool_matrix']}")
+        logger.info(f"  Multi-res matrix (.mcool): {final_outputs['mcool_matrix']}")
+        
+        logger.info(f"\nDeleted files: {len(deleted_files)}")
+        for f in deleted_files:
+            logger.info(f"  - {f}")
+        
+        if not cleanup:
+            dedup_file = os.path.join(output_dir, 'pairs', f'{sample_id}.dedup.pairs.gz')
+            if os.path.exists(dedup_file):
+                logger.info(f"\nIntermediate files kept (use cleanup=True to remove):")
+                logger.info(f"  - {dedup_file}")
+        
+        logger.info(f"\nNote: To convert BAM back to SAM, use: samtools view -h sorted.bam > output.sam")
+        
+        # Generate detailed QC report
+        try:
+            from .qc_report import generate_hic_qc_report
+            qc_report_file = os.path.join(qc_dir, f'{sample_id}_quality_report.txt')
+            report = generate_hic_qc_report(
+                qc_dir=qc_dir,
+                sample_id=sample_id,
+                output_file=qc_report_file,
+                timing_info=all_stats
+            )
+            logger.info(f"\n{'=' * 70}")
+            logger.info("DETAILED QUALITY REPORT")
+            logger.info(f"{'=' * 70}")
+            # Print the report to log
+            for line in report.split('\n'):
+                logger.info(line)
+            logger.info(f"\nQuality report saved to: {qc_report_file}")
+            all_stats['qc_report_file'] = qc_report_file
+        except Exception as e:
+            logger.warning(f"Could not generate QC report: {e}")
         
         return all_stats
     
-    def _cleanup(self, output_dir: str, sample_id: str):
-        """Remove intermediate files to save disk space."""
-        logger.info("Cleaning up intermediate files...")
+    def _cleanup(self, output_dir: str, sample_id: str) -> List[str]:
+        """
+        Remove additional intermediate files to save disk space.
         
-        # Remove SAM files
-        aligned_dir = os.path.join(output_dir, 'aligned')
-        for sam_file in glob.glob(os.path.join(aligned_dir, '*.sam')):
-            os.remove(sam_file)
-            logger.info(f"  Removed: {sam_file}")
+        Note: SAM files are ALWAYS deleted (handled in run() method) since
+        BAM is kept and can be converted back to SAM via: samtools view -h file.bam > file.sam
         
-        # Remove intermediate pairs files (keep only filtered)
+        Files deleted by this method (only when cleanup=True):
+            - pairs/{sample_id}.dedup.pairs.gz (intermediate, redundant with filtered)
+            
+        Files always kept:
+            - processed/{sample_id}_sorted.bam (useful for reprocessing, can convert to SAM)
+            - pairs/{sample_id}.sorted.pairs.gz (useful for reprocessing)
+            - pairs/{sample_id}.filtered.pairs.gz (final filtered pairs)
+            - matrices/{sample_id}.cool (contact matrix)
+            - matrices/{sample_id}.mcool (multi-resolution matrix)
+            - All QC stats files
+            
+        Args:
+            output_dir: Output directory
+            sample_id: Sample identifier
+            
+        Returns:
+            List of deleted file paths
+        """
+        logger.info("Cleaning up additional intermediate files...")
+        deleted_files = []
+        
+        # Remove dedup pairs (keep sorted pairs for potential reprocessing)
+        # Note: sorted.pairs.gz and filtered.pairs.gz are kept
         pairs_dir = os.path.join(output_dir, 'pairs')
-        for pattern in ['*.temp.pairs.gz', '*.dedup.pairs.gz']:
-            for f in glob.glob(os.path.join(pairs_dir, pattern)):
-                os.remove(f)
-                logger.info(f"  Removed: {f}")
+        dedup_file = os.path.join(pairs_dir, f'{sample_id}.dedup.pairs.gz')
+        if os.path.exists(dedup_file):
+            os.remove(dedup_file)
+            deleted_files.append(dedup_file)
+            logger.info(f"  Removed: {dedup_file}")
+        
+        logger.info(f"  Additional files removed: {len(deleted_files)}")
+        logger.info(f"  Files kept: sorted.bam, sorted.pairs.gz, filtered.pairs.gz, .cool, .mcool")
+        
+        return deleted_files
 
 
 class HiCQCAnalyzer:

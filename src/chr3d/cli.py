@@ -391,13 +391,30 @@ def _run_hic_pipeline(args, output_dir: Path):
             cleanup=not args.keep_intermediates
         )
         
+        # Get final outputs from stats
+        final_outputs = stats.get('final_outputs', {})
+        
         logger.info("\n" + "=" * 70)
         logger.info("HI-C PIPELINE COMPLETE!")
         logger.info("=" * 70)
         logger.info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"\nFinal outputs:")
-        logger.info(f"  Filtered pairs: {output_dir / 'sample.filtered.pairs.gz'}")
-        logger.info(f"  Contact matrix: {output_dir / 'sample.mcool'}")
+        logger.info(f"\nFinal outputs (always kept):")
+        logger.info(f"  Sorted BAM: {final_outputs.get('sorted_bam', 'N/A')}")
+        logger.info(f"  Sorted pairs: {final_outputs.get('sorted_pairs', 'N/A')}")
+        logger.info(f"  Filtered pairs: {final_outputs.get('filtered_pairs', 'N/A')}")
+        logger.info(f"  Contact matrix (.cool): {final_outputs.get('cool_matrix', 'N/A')}")
+        logger.info(f"  Multi-res matrix (.mcool): {final_outputs.get('mcool_matrix', 'N/A')}")
+        
+        # SAM is always deleted (BAM is kept and can convert back to SAM)
+        deleted = stats.get('deleted_files', [])
+        if deleted:
+            logger.info(f"\nDeleted {len(deleted)} file(s) (SAM always removed, BAM kept)")
+        
+        if args.keep_intermediates:
+            logger.info(f"\nIntermediate files kept (--keep-intermediates):")
+            logger.info(f"  Dedup pairs: {output_dir}/pairs/{args.sample_id}.dedup.pairs.gz")
+            logger.info(f"\nNote: SAM deleted but BAM kept. Convert back: samtools view -h sorted.bam > output.sam")
+        
         logger.info("=" * 70)
         
         return 0

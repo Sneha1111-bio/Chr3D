@@ -1,11 +1,1 @@
-{
-  "version": 4,
-  "routes": {},
-  "dynamicRoutes": {},
-  "notFoundRoutes": [],
-  "preview": {
-    "previewModeId": "960cf582cfa5248bd064ea5c2450a0d3",
-    "previewModeSigningKey": "59edea57063de967731dec951f27644ed1dd7171de72379208cd11e67d8b2e55",
-    "previewModeEncryptionKey": "d50811d46bf6e6956f3c25ed38935a34b38759ea6c0e45c98ec72df619bca096"
-  }
-}
+{"version":4,"routes":{"/docs/benchmarks":{},"/docs/comparison":{},"/docs/faq":{},"/docs/api/chiapet":{},"/docs/api/hic":{},"/docs/api/hichip":{},"/docs/api":{},"/docs/api/utils":{},"/docs/cli/chiapet":{},"/docs/cli/hic":{},"/docs/cli/hichip":{},"/docs/cli":{},"/docs/getting-started/concepts":{},"/docs/getting-started":{},"/docs/getting-started/installation":{},"/docs/getting-started/quickstart":{},"/docs/guides/loop-calling":{},"/docs/guides/matrix-generation":{},"/docs/guides/quality-control":{},"/docs/guides/restriction-fragments":{},"/docs/tutorials/hic-api":{},"/docs/tutorials/hic-cli":{},"/docs/tutorials/hichip-api":{},"/docs/tutorials/hichip-cli":{},"/docs/tutorials":{}},"dynamicRoutes":{"/docs/[[...slug]]":{"dataRoute":null,"dataRouteRegex":null,"fallback":null,"fallbackRevalidate":false,"fallbackSourceRoute":"/docs/[[...slug]]","routeRegex":"^\\/docs(?:\\/(.+?))?(?:\\/)?$","allowHeader":[]}},"notFoundRoutes":[],"preview":{"previewModeId":"baae9741c8804816695122e958ad1969","previewModeSigningKey":"8baf2bafa8918a0a06edef59dec6edb4b60e3d96f4238514fc583a060aecd40b","previewModeEncryptionKey":"19cc00da7417dabe77235d3d1cc4b7829f2050c6a2944c1965a2a8772ae00ccc"}}
