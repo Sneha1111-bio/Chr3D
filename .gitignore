@@ -64,3 +64,10 @@ htmlcov/
 # Build outputs
 *.out
 *.build
+
+# Next.js
+.next/
+out/
+
+# Workspace files
+*.code-workspace

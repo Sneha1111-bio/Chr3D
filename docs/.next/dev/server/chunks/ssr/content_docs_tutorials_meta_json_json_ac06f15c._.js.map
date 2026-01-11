@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 3, "column": 0}, "map": {"version":3,"sources":["turbopack:///[project]/content/docs/tutorials/meta.json.json"],"sourcesContent":["{\"title\":\"Tutorials\",\"pages\":[\"index\",\"hichip-api\",\"hichip-cli\",\"hic-api\",\"hic-cli\"]}"],"names":[],"mappings":"AAAA"}},
-    {"offset": {"line": 3, "column": 111}, "map": {"version":3,"sources":[],"names":[],"mappings":"A"}}]
-}
