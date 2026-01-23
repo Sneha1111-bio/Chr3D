@@ -850,7 +850,8 @@ class PETMapper:
         else:
             Path(output_dir).mkdir(parents=True, exist_ok=True)
         
-        temp_dir = tempfile.mkdtemp(prefix="mapping_chunks_")
+        # Use output_dir for temp files to avoid filling up /tmp on small partitions
+        temp_dir = tempfile.mkdtemp(prefix="mapping_chunks_", dir=output_dir)
         chunk_output_dir = os.path.join(temp_dir, "chunk_bedpe")
         os.makedirs(chunk_output_dir, exist_ok=True)
         
