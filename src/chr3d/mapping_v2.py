@@ -531,23 +531,28 @@ class PETMapper:
             stats['unmapped'] += 1
             return
         
-        # Filter by proper pairing (RELAXED for ChIA-PET short tags)
-        # For ChIA-PET, BWA may not set is_proper_pair correctly for short tags
-        # So we just check both reads are mapped - proper pairing will be validated later
-        # by checking they're on reasonable chromosomes and distances
+        # ========================================================================
+        # FOR CHIA-PET: DO NOT FILTER BY is_proper_pair!
+        # ChIA-PET represents chromatin interactions, not genomic fragments.
+        # The reads may have unusual orientations and distances that don't match
+        # BWA's "proper pair" criteria (which expects standard paired-end sequencing).
+        #
+        # Paper's criteria (Li et al. 2010, Table 4):
+        # 1. Both reads mapped
+        # 2. Mapping quality >= 30 (uniquely mapped)
+        # 3. No filtering by pair orientation or insert size
+        # ========================================================================
         
-        # Count how many would fail strict proper pair filter (for stats)
+        # Count "not properly paired" for statistics ONLY (don't filter!)
         r1_proper = [a for a in r1_alns if a.is_proper_pair]
         r2_proper = [a for a in r2_alns if a.is_proper_pair]
         
         if not r1_proper or not r2_proper:
             stats['not_properly_paired'] += 1
-            # But continue anyway - don't return!
+            # Continue processing - don't filter these out!
         
-        # Don't filter by is_proper_pair - just use mapped reads
-        # r1_alns and r2_alns already filtered for mapped reads above
-        
-        # Filter by mapping quality
+        # Filter ONLY by mapping quality (NOT by proper pair!)
+        # r1_alns and r2_alns contain ALL mapped reads, not just properly-paired ones
         r1_alns = [a for a in r1_alns if a.mapping_quality >= self.mapping_quality_cutoff]
         r2_alns = [a for a in r2_alns if a.mapping_quality >= self.mapping_quality_cutoff]
         

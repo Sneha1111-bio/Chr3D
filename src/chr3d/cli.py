@@ -492,6 +492,9 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             
             linker_filter = LinkerFilterV3(
                 linker_sequences=linkers,
+                min_alignment_score=args.min_score,
+                min_tag_length=args.min_tag_length,
+                max_tag_length=args.max_tag_length,
                 n_threads=args.threads
             )
             
@@ -805,6 +808,30 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
         
         logger.info(f"QC summary written to: {qc_file}")
         
+        # Generate comprehensive ChIA-PET quality report
+        if args.mode == 'chiapet':
+            from .chiapet_qc_report import generate_chiapet_report
+            
+            logger.info("\n" + "=" * 70)
+            logger.info("GENERATING COMPREHENSIVE QUALITY REPORT")
+            logger.info("=" * 70)
+            
+            report_file = step_dirs['qc'] / f'{args.sample_id}_comprehensive_qc_report.txt'
+            try:
+                report = generate_chiapet_report(
+                    qc_dir=str(step_dirs['qc']),
+                    sample_id=args.sample_id,
+                    output_file=str(report_file),
+                    output_dir=str(output_dir),
+                    genome=args.assembly if hasattr(args, 'assembly') else 'hg38',
+                    self_ligation_cutoff=args.self_ligation_cutoff,
+                    extension_length=args.extension_length,
+                    threads=args.threads
+                )
+                logger.info(f"Comprehensive QC report written to: {report_file}")
+            except Exception as e:
+                logger.warning(f"Could not generate comprehensive report: {e}")
+        
         # Final summary
         logger.info("\n" + "=" * 70)
         logger.info(f"{args.mode.upper()} PIPELINE COMPLETE!")
@@ -914,6 +941,14 @@ For more information: https://github.com/rudrajoshi2481/Chr3D
     run_parser.add_argument('--threads', type=int, default=24, help='Number of threads (default: 24)')
     run_parser.add_argument('--use-bwa-mem', action='store_true', default=True, help='Use BWA-MEM (default: True)')
     run_parser.add_argument('--use-bwa-aln', action='store_true', help='Use BWA-ALN instead of BWA-MEM')
+    
+    # Linker filtering parameters
+    run_parser.add_argument('--min-tag-length', type=int, default=18,
+                           help='Minimum tag length after linker removal (default: 18)')
+    run_parser.add_argument('--max-tag-length', type=int, default=1000,
+                           help='Maximum tag length (default: 1000)')
+    run_parser.add_argument('--min-score', type=int, default=14,
+                           help='Minimum linker alignment score (default: 14)')
     
     # ChIA-PET/HiChIP parameters
     run_parser.add_argument('--genome-size', default='hs', help='Genome size for MACS3 (default: hs)')
