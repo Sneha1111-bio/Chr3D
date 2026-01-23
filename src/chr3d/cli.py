@@ -445,11 +445,24 @@ def _write_step_qc(qc_dir: Path, step_name: str, step_num: str, stats: dict, sam
     return qc_file
 
 
+def _check_step_complete(step_dir: Path, expected_files: list) -> bool:
+    """Check if a step is complete by verifying expected output files exist and are non-empty."""
+    for f in expected_files:
+        filepath = step_dir / f if not str(f).startswith('/') else Path(f)
+        if not filepath.exists() or filepath.stat().st_size == 0:
+            return False
+    return True
+
+
 def _run_chiapet_hichip_pipeline(args, output_dir: Path):
     """Run ChIA-PET or HiChIP analysis pipeline."""
     logger.info("\n" + "=" * 70)
     logger.info(f"{args.mode.upper()} PIPELINE")
     logger.info("=" * 70)
+    
+    resume_mode = getattr(args, 'resume', False)
+    if resume_mode:
+        logger.info("RESUME MODE: Will skip steps with existing outputs")
     
     # Set up step-specific output directories with proper numbering
     # HiChIP: step01=mapping (no linker filtering)
@@ -480,34 +493,43 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
     try:
         # Step 1 for ChIA-PET: Linker Filtering (HiChIP skips this)
         if args.mode == 'chiapet' and args.linker_a:
-            from .linker_filtering_v3 import LinkerFilterV3
+            linker_expected_files = ['filtered.1_1.R1.fastq', 'filtered.1_1.R2.fastq']
+            linker_complete = resume_mode and _check_step_complete(step_dirs['linker_filtering'], linker_expected_files)
             
-            logger.info("\n" + "=" * 70)
-            logger.info("STEP 01: LINKER FILTERING (ChIA-PET)")
-            logger.info("=" * 70)
-            
-            linkers = [args.linker_a]
-            if args.linker_b:
-                linkers.append(args.linker_b)
-            
-            linker_filter = LinkerFilterV3(
-                linker_sequences=linkers,
-                min_alignment_score=args.min_score,
-                min_tag_length=args.min_tag_length,
-                max_tag_length=args.max_tag_length,
-                n_threads=args.threads
-            )
-            
-            linker_stats = linker_filter.filter_fastq_parallel(
-                fastq_r1=args.fastq_r1,
-                fastq_r2=args.fastq_r2,
-                output_prefix='filtered',
-                output_dir=str(step_dirs['linker_filtering'])
-            )
-            
-            # Write QC for linker filtering
-            _write_step_qc(step_dirs['qc'], 'linker_filtering', '01', linker_stats, args.sample_id)
-            logger.info(f"  QC written to: {step_dirs['qc']}")
+            if linker_complete:
+                logger.info("\n" + "=" * 70)
+                logger.info("STEP 01: LINKER FILTERING (ChIA-PET) - SKIPPED (outputs exist)")
+                logger.info("=" * 70)
+                linker_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist'}
+            else:
+                from .linker_filtering_v3 import LinkerFilterV3
+                
+                logger.info("\n" + "=" * 70)
+                logger.info("STEP 01: LINKER FILTERING (ChIA-PET)")
+                logger.info("=" * 70)
+                
+                linkers = [args.linker_a]
+                if args.linker_b:
+                    linkers.append(args.linker_b)
+                
+                linker_filter = LinkerFilterV3(
+                    linker_sequences=linkers,
+                    min_alignment_score=args.min_score,
+                    min_tag_length=args.min_tag_length,
+                    max_tag_length=args.max_tag_length,
+                    n_threads=args.threads
+                )
+                
+                linker_stats = linker_filter.filter_fastq_parallel(
+                    fastq_r1=args.fastq_r1,
+                    fastq_r2=args.fastq_r2,
+                    output_prefix='filtered',
+                    output_dir=str(step_dirs['linker_filtering'])
+                )
+                
+                # Write QC for linker filtering
+                _write_step_qc(step_dirs['qc'], 'linker_filtering', '01', linker_stats, args.sample_id)
+                logger.info(f"  QC written to: {step_dirs['qc']}")
             
             # Use filtered files for next step
             fastq_r1 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R1.fastq')
@@ -518,150 +540,201 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             fastq_r2 = args.fastq_r2
         
         # Mapping step
-        from .mapping_v2 import PETMapper
-        
         step_num = '01' if args.mode == 'hichip' else '02'
-        logger.info("\n" + "=" * 70)
-        logger.info(f"STEP {step_num}: GENOMIC MAPPING")
-        logger.info("=" * 70)
+        mapping_expected_files = ['mapped.dedup.bedpe']
+        mapping_complete = resume_mode and _check_step_complete(step_dirs['mapping'], mapping_expected_files)
         
-        # Use BWA-MEM by default, unless --use-bwa-aln is specified
-        use_bwa_mem = not getattr(args, 'use_bwa_aln', False)
-        
-        mapper = PETMapper(
-            genome_index=args.genome_index,
-            mapping_quality_cutoff=args.mapping_quality,
-            n_threads=args.threads,
-            use_bwa_mem=use_bwa_mem,
-            self_ligation_cutoff=args.self_ligation_cutoff
-        )
-        
-        map_stats = mapper.map_linker_filtered_fastq(
-            fastq_r1=fastq_r1,
-            fastq_r2=fastq_r2,
-            output_prefix='mapped',
-            output_dir=str(step_dirs['mapping'])
-        )
-        
-        # Write QC for mapping
-        _write_step_qc(step_dirs['qc'], 'mapping', step_num, map_stats, args.sample_id)
-        logger.info(f"  QC written to: {step_dirs['qc']}")
+        if mapping_complete:
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: GENOMIC MAPPING - SKIPPED (outputs exist)")
+            logger.info("=" * 70)
+            map_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist'}
+        else:
+            from .mapping_v2 import PETMapper
+            
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: GENOMIC MAPPING")
+            logger.info("=" * 70)
+            
+            # Use BWA-MEM by default, unless --use-bwa-aln is specified
+            use_bwa_mem = not getattr(args, 'use_bwa_aln', False)
+            
+            mapper = PETMapper(
+                genome_index=args.genome_index,
+                mapping_quality_cutoff=args.mapping_quality,
+                n_threads=args.threads,
+                use_bwa_mem=use_bwa_mem,
+                self_ligation_cutoff=args.self_ligation_cutoff
+            )
+            
+            map_stats = mapper.map_linker_filtered_fastq(
+                fastq_r1=fastq_r1,
+                fastq_r2=fastq_r2,
+                output_prefix='mapped',
+                output_dir=str(step_dirs['mapping'])
+            )
+            
+            # Write QC for mapping
+            _write_step_qc(step_dirs['qc'], 'mapping', step_num, map_stats, args.sample_id)
+            logger.info(f"  QC written to: {step_dirs['qc']}")
         
         bedpe_file = str(step_dirs['mapping'] / 'mapped.dedup.bedpe')
         
         # Purifying step
         step_num = '02' if args.mode == 'hichip' else '03'
-        logger.info("\n" + "=" * 70)
-        logger.info(f"STEP {step_num}: PET PURIFYING")
-        logger.info("=" * 70)
+        purify_expected = ['purified.merged.bedpe'] if args.mode == 'chiapet' else ['purified.valid.bedpe']
+        purify_complete = resume_mode and _check_step_complete(step_dirs['purifying'], purify_expected)
         
-        if args.mode == 'chiapet':
-            from .chiapet_purifying import ChIAPETPurifier
-            
-            purifier = ChIAPETPurifier(merge_distance=2)
-            purify_stats = purifier.purify(bedpe_file, str(step_dirs['purifying'] / 'purified'))
-            purified_bedpe = str(step_dirs['purifying'] / 'purified.merged.bedpe')
+        if purify_complete:
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: PET PURIFYING - SKIPPED (outputs exist)")
+            logger.info("=" * 70)
+            purify_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist'}
+            purified_bedpe = str(step_dirs['purifying'] / purify_expected[0])
         else:
-            from .hichip_purifying import HiChIPPurifier
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: PET PURIFYING")
+            logger.info("=" * 70)
             
-            purifier = HiChIPPurifier(restriction_file=args.restriction_sites)
-            purify_stats = purifier.remove_same_fragment_pets(
-                bedpe_file,
-                str(step_dirs['purifying'] / 'purified.valid.bedpe'),
-                str(step_dirs['purifying'] / 'purified.sameres.bedpe')
-            )
-            purified_bedpe = str(step_dirs['purifying'] / 'purified.valid.bedpe')
-        
-        # Write QC for purifying
-        _write_step_qc(step_dirs['qc'], 'purifying', step_num, purify_stats, args.sample_id)
-        logger.info(f"  QC written to: {step_dirs['qc']}")
+            if args.mode == 'chiapet':
+                from .chiapet_purifying import ChIAPETPurifier
+                
+                purifier = ChIAPETPurifier(merge_distance=2)
+                purify_stats = purifier.purify(bedpe_file, str(step_dirs['purifying'] / 'purified'))
+                purified_bedpe = str(step_dirs['purifying'] / 'purified.merged.bedpe')
+            else:
+                from .hichip_purifying import HiChIPPurifier
+                
+                purifier = HiChIPPurifier(restriction_file=args.restriction_sites)
+                purify_stats = purifier.remove_same_fragment_pets(
+                    bedpe_file,
+                    str(step_dirs['purifying'] / 'purified.valid.bedpe'),
+                    str(step_dirs['purifying'] / 'purified.sameres.bedpe')
+                )
+                purified_bedpe = str(step_dirs['purifying'] / 'purified.valid.bedpe')
+            
+            # Write QC for purifying
+            _write_step_qc(step_dirs['qc'], 'purifying', step_num, purify_stats, args.sample_id)
+            logger.info(f"  QC written to: {step_dirs['qc']}")
         
         # Categorization step
-        from .pet_categorization import PETCategorizer
-        
         step_num = '03' if args.mode == 'hichip' else '04'
-        logger.info("\n" + "=" * 70)
-        logger.info(f"STEP {step_num}: PET CATEGORIZATION")
-        logger.info("=" * 70)
+        cat_expected = ['categorized.ipet', 'categorized.spet']
+        cat_complete = resume_mode and _check_step_complete(step_dirs['categorization'], cat_expected)
         
-        cutoff = args.self_ligation_cutoff if args.mode == 'chiapet' else 1000
-        categorizer = PETCategorizer(self_ligation_cutoff=cutoff, mode=args.mode)
-        cat_stats = categorizer.categorize_bedpe(
-            purified_bedpe,
-            str(step_dirs['categorization'] / 'categorized')
-        )
-        
-        # Write QC for categorization
-        _write_step_qc(step_dirs['qc'], 'categorization', step_num, cat_stats, args.sample_id)
-        logger.info(f"  QC written to: {step_dirs['qc']}")
+        if cat_complete:
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: PET CATEGORIZATION - SKIPPED (outputs exist)")
+            logger.info("=" * 70)
+            cat_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist',
+                        'total': 0, 'ipet': {'count': 0, 'percentage': 0},
+                        'spet': {'count': 0, 'percentage': 0}, 'opet': {'count': 0, 'percentage': 0}}
+        else:
+            from .pet_categorization import PETCategorizer
+            
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: PET CATEGORIZATION")
+            logger.info("=" * 70)
+            
+            cutoff = args.self_ligation_cutoff if args.mode == 'chiapet' else 1000
+            categorizer = PETCategorizer(self_ligation_cutoff=cutoff, mode=args.mode)
+            cat_stats = categorizer.categorize_bedpe(
+                purified_bedpe,
+                str(step_dirs['categorization'] / 'categorized')
+            )
+            
+            # Write QC for categorization
+            _write_step_qc(step_dirs['qc'], 'categorization', step_num, cat_stats, args.sample_id)
+            logger.info(f"  QC written to: {step_dirs['qc']}")
         
         ipet_file = str(step_dirs['categorization'] / 'categorized.ipet')
         spet_file = str(step_dirs['categorization'] / 'categorized.spet')
         
         # Peak Calling step
-        from .peak_calling import PeakCaller
-        
         step_num = '04' if args.mode == 'hichip' else '05'
-        logger.info("\n" + "=" * 70)
-        logger.info(f"STEP {step_num}: PEAK CALLING")
-        logger.info("=" * 70)
+        peak_expected = ['peaks_peaks.narrowPeak']
+        peak_complete = resume_mode and _check_step_complete(step_dirs['peaks'], peak_expected)
         
-        peak_caller = PeakCaller(
-            genome_size=args.genome_size,
-            qvalue_cutoff=0.05,
-            keep_dup='all'
-        )
-        peak_stats = peak_caller.call_peaks(
-            spet_file,
-            str(step_dirs['peaks'] / 'peaks')
-        )
-        
-        # Write QC for peak calling
-        _write_step_qc(step_dirs['qc'], 'peaks', step_num, peak_stats, args.sample_id)
-        logger.info(f"  QC written to: {step_dirs['qc']}")
+        if peak_complete:
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: PEAK CALLING - SKIPPED (outputs exist)")
+            logger.info("=" * 70)
+            peak_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist', 'num_peaks': 0}
+        else:
+            from .peak_calling import PeakCaller
+            
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: PEAK CALLING")
+            logger.info("=" * 70)
+            
+            peak_caller = PeakCaller(
+                genome_size=args.genome_size,
+                qvalue_cutoff=0.05,
+                keep_dup='all'
+            )
+            peak_stats = peak_caller.call_peaks(
+                spet_file,
+                str(step_dirs['peaks'] / 'peaks')
+            )
+            
+            # Write QC for peak calling
+            _write_step_qc(step_dirs['qc'], 'peaks', step_num, peak_stats, args.sample_id)
+            logger.info(f"  QC written to: {step_dirs['qc']}")
         
         # Loop Calling step
-        from .loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
-        
         step_num = '05' if args.mode == 'hichip' else '06'
-        logger.info("\n" + "=" * 70)
-        logger.info(f"STEP {step_num}: LOOP CALLING")
-        logger.info("=" * 70)
+        loop_expected = ['loops.cluster.FDRfiltered.txt']
+        loop_complete = resume_mode and _check_step_complete(step_dirs['loops'], loop_expected)
         
-        # 6.1 Pre-clustering
-        pre_clusterer = PreClusterer(extension_length=args.extension_length)
-        precluster_stats = pre_clusterer.pre_cluster(
-            ipet_file,
-            str(step_dirs['loops'] / 'preclustered')
-        )
-        
-        # 6.2 Anchor clustering
-        anchor_clusterer = AnchorClusterer()
-        cluster_stats = anchor_clusterer.cluster_anchors(
-            precluster_stats['output_file'],
-            str(step_dirs['loops'] / 'clusters.txt')
-        )
-        
-        # 6.3 Statistical significance
-        stat_sig = StatisticalSignificance(
-            ipet_count_threshold=args.ipet_threshold,
-            pvalue_cutoff=args.fdr_cutoff,
-            extension_length=args.extension_length
-        )
-        sig_stats = stat_sig.calculate_significance(
-            str(step_dirs['loops'] / 'clusters.txt'),
-            ipet_file,
-            str(step_dirs['loops'] / 'loops')
-        )
-        
-        # Write QC for loop calling
-        loop_qc = {
-            'precluster': precluster_stats,
-            'anchor_cluster': cluster_stats,
-            'significance': sig_stats
-        }
-        _write_step_qc(step_dirs['qc'], 'loops', step_num, loop_qc, args.sample_id)
-        logger.info(f"  QC written to: {step_dirs['qc']}")
+        if loop_complete:
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: LOOP CALLING - SKIPPED (outputs exist)")
+            logger.info("=" * 70)
+            sig_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist',
+                        'num_clusters': 0, 'num_significant_loops': 0}
+            precluster_stats = {}
+            cluster_stats = {}
+        else:
+            from .loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
+            
+            logger.info("\n" + "=" * 70)
+            logger.info(f"STEP {step_num}: LOOP CALLING")
+            logger.info("=" * 70)
+            
+            # 6.1 Pre-clustering
+            pre_clusterer = PreClusterer(extension_length=args.extension_length)
+            precluster_stats = pre_clusterer.pre_cluster(
+                ipet_file,
+                str(step_dirs['loops'] / 'preclustered')
+            )
+            
+            # 6.2 Anchor clustering
+            anchor_clusterer = AnchorClusterer()
+            cluster_stats = anchor_clusterer.cluster_anchors(
+                precluster_stats['output_file'],
+                str(step_dirs['loops'] / 'clusters.txt')
+            )
+            
+            # 6.3 Statistical significance
+            stat_sig = StatisticalSignificance(
+                ipet_count_threshold=args.ipet_threshold,
+                pvalue_cutoff=args.fdr_cutoff,
+                extension_length=args.extension_length
+            )
+            sig_stats = stat_sig.calculate_significance(
+                str(step_dirs['loops'] / 'clusters.txt'),
+                ipet_file,
+                str(step_dirs['loops'] / 'loops')
+            )
+            
+            # Write QC for loop calling
+            loop_qc = {
+                'precluster': precluster_stats,
+                'anchor_cluster': cluster_stats,
+                'significance': sig_stats
+            }
+            _write_step_qc(step_dirs['qc'], 'loops', step_num, loop_qc, args.sample_id)
+            logger.info(f"  QC written to: {step_dirs['qc']}")
         
         # Cleanup intermediate files if requested
         if not args.keep_intermediates:
@@ -974,6 +1047,8 @@ For more information: https://github.com/rudrajoshi2481/Chr3D
                            help='Keep intermediate files (SAM, unsorted BAM, etc.)')
     run_parser.add_argument('--keep-sam', action='store_true', help='Keep SAM files')
     run_parser.add_argument('--no-dedup', action='store_true', help='Skip PCR duplicate removal')
+    run_parser.add_argument('--resume', action='store_true',
+                           help='Resume from last completed step (skip steps with existing outputs)')
     
     run_parser.set_defaults(func=cmd_run)
     

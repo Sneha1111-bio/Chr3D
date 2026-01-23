@@ -839,7 +839,11 @@ class PETMapper:
         start_time = time.time()
         
         if n_chunks is None:
-            n_chunks = self.n_threads if not self.use_bwa_mem else 6
+            # Cap chunks to avoid spawning too many concurrent BWA processes
+            # Each BWA-ALN loads the full genome index (~3-5GB for hg38)
+            # More than 24 concurrent processes causes memory/file handle issues
+            max_concurrent_bwa = 24
+            n_chunks = min(self.n_threads, max_concurrent_bwa) if not self.use_bwa_mem else 6
         
         if output_dir is None:
             output_dir = str(Path(fastq_r1).parent)
@@ -890,7 +894,12 @@ class PETMapper:
             chunk_bedpes = []
             all_stats = []
             
-            with ProcessPoolExecutor(max_workers=n_chunks) as executor:
+            # Cap max_workers to avoid resource exhaustion
+            # Even with many chunks, limit concurrent BWA processes
+            max_workers = min(n_chunks, 24)
+            logger.info(f"  Using {max_workers} parallel workers for {n_chunks} chunks")
+            
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(_map_chunk_worker, args): idx 
                           for idx, args in enumerate(worker_args)}
                 
