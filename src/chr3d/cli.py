@@ -531,15 +531,33 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 _write_step_qc(step_dirs['qc'], 'linker_filtering', '01', linker_stats, args.sample_id)
                 logger.info(f"  QC written to: {step_dirs['qc']}")
             
-            # Use filtered files for next step
-            fastq_r1 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R1.fastq')
-            fastq_r2 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R2.fastq')
+            # Use filtered files for next step - BOTH A-A and B-B linker types!
+            # 1_1 = Linker A-A (same linker type)
+            # 2_2 = Linker B-B (same linker type)
+            aa_fastq_r1 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R1.fastq')
+            aa_fastq_r2 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R2.fastq')
+            bb_fastq_r1 = str(step_dirs['linker_filtering'] / 'filtered.2_2.R1.fastq')
+            bb_fastq_r2 = str(step_dirs['linker_filtering'] / 'filtered.2_2.R2.fastq')
+            
+            # Check which linker files exist (single linker mode only has 1_1)
+            has_aa = Path(aa_fastq_r1).exists() and Path(aa_fastq_r1).stat().st_size > 0
+            has_bb = Path(bb_fastq_r1).exists() and Path(bb_fastq_r1).stat().st_size > 0
+            
+            linker_files = []
+            if has_aa:
+                linker_files.append(('AA', aa_fastq_r1, aa_fastq_r2))
+            if has_bb:
+                linker_files.append(('BB', bb_fastq_r1, bb_fastq_r2))
+            
+            if not linker_files:
+                raise FileNotFoundError("No linker-filtered FASTQ files found!")
+            
+            logger.info(f"  Found {len(linker_files)} linker type(s) to map: {[lf[0] for lf in linker_files]}")
         else:
             # HiChIP uses original FASTQs directly (no linker filtering needed)
-            fastq_r1 = args.fastq_r1
-            fastq_r2 = args.fastq_r2
+            linker_files = [('single', args.fastq_r1, args.fastq_r2)]
         
-        # Mapping step
+        # Mapping step - now maps BOTH A-A and B-B, then merges
         step_num = '01' if args.mode == 'hichip' else '02'
         mapping_expected_files = ['mapped.dedup.bedpe']
         mapping_complete = resume_mode and _check_step_complete(step_dirs['mapping'], mapping_expected_files)
@@ -567,12 +585,82 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 self_ligation_cutoff=args.self_ligation_cutoff
             )
             
-            map_stats = mapper.map_linker_filtered_fastq(
-                fastq_r1=fastq_r1,
-                fastq_r2=fastq_r2,
-                output_prefix='mapped',
-                output_dir=str(step_dirs['mapping'])
-            )
+            # Map each linker type separately, then merge
+            all_bedpe_files = []
+            all_stats = []
+            
+            for linker_type, r1_file, r2_file in linker_files:
+                logger.info(f"\n  --- Mapping Linker {linker_type} reads ---")
+                logger.info(f"  R1: {r1_file}")
+                logger.info(f"  R2: {r2_file}")
+                
+                linker_stats = mapper.map_linker_filtered_fastq(
+                    fastq_r1=r1_file,
+                    fastq_r2=r2_file,
+                    output_prefix=f'mapped_{linker_type}',
+                    output_dir=str(step_dirs['mapping']),
+                    remove_duplicates=False  # Deduplicate AFTER merging all linker types
+                )
+                
+                bedpe_file = str(step_dirs['mapping'] / f'mapped_{linker_type}.bedpe')
+                if Path(bedpe_file).exists():
+                    all_bedpe_files.append(bedpe_file)
+                    all_stats.append(linker_stats)
+                    logger.info(f"  ✓ {linker_type}: {linker_stats.get('valid_pairs', 0):,} valid pairs")
+                else:
+                    logger.warning(f"  ⚠ {linker_type}: BEDPE file not created")
+            
+            # Merge all BEDPE files
+            logger.info(f"\n  --- Merging {len(all_bedpe_files)} BEDPE files ---")
+            merged_bedpe = str(step_dirs['mapping'] / 'mapped.bedpe')
+            
+            total_pairs = 0
+            with open(merged_bedpe, 'w') as out_f:
+                for bedpe_file in all_bedpe_files:
+                    with open(bedpe_file, 'r') as in_f:
+                        for line in in_f:
+                            out_f.write(line)
+                            total_pairs += 1
+            
+            logger.info(f"  ✓ Merged BEDPE: {total_pairs:,} total pairs")
+            
+            # Deduplicate the merged file
+            logger.info(f"\n  --- Deduplicating merged BEDPE ---")
+            dedup_bedpe = str(step_dirs['mapping'] / 'mapped.dedup.bedpe')
+            dup_count = mapper.remove_duplicates(merged_bedpe, dedup_bedpe)
+            
+            unique_pairs = total_pairs - dup_count
+            dup_rate = dup_count / total_pairs if total_pairs > 0 else 0
+            logger.info(f"  ✓ Duplicates removed: {dup_count:,} ({dup_rate*100:.1f}%)")
+            logger.info(f"  ✓ Unique pairs: {unique_pairs:,}")
+            
+            # Aggregate stats from all linker types
+            map_stats = {
+                'total_read_groups': sum(s.get('total_read_groups', 0) for s in all_stats),
+                'valid_pairs': total_pairs,
+                'unique_pets': unique_pairs,
+                'duplicates': dup_count,
+                'duplicate_rate': dup_rate,
+                'intra_chromosomal': sum(s.get('intra_chromosomal', 0) for s in all_stats),
+                'inter_chromosomal': sum(s.get('inter_chromosomal', 0) for s in all_stats),
+                'unmapped': sum(s.get('unmapped', 0) for s in all_stats),
+                'low_quality': sum(s.get('low_quality', 0) for s in all_stats),
+                'not_properly_paired': sum(s.get('not_properly_paired', 0) for s in all_stats),
+                'excessive_distance': sum(s.get('excessive_distance', 0) for s in all_stats),
+                'linker_types_mapped': [lf[0] for lf in linker_files],
+                'per_linker_stats': {linker_files[i][0]: all_stats[i] for i in range(len(all_stats))}
+            }
+            
+            # Cleanup individual BEDPE files (keep only merged)
+            for bedpe_file in all_bedpe_files:
+                try:
+                    Path(bedpe_file).unlink()
+                except:
+                    pass
+            try:
+                Path(merged_bedpe).unlink()  # Remove undeduped merged file
+            except:
+                pass
             
             # Write QC for mapping
             _write_step_qc(step_dirs['qc'], 'mapping', step_num, map_stats, args.sample_id)
