@@ -532,28 +532,48 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 _write_step_qc(step_dirs['qc'], 'linker_filtering', '01', linker_stats, args.sample_id)
                 logger.info(f"  QC written to: {step_dirs['qc']}")
             
-            # Use filtered files for next step - BOTH A-A and B-B linker types!
-            # 1_1 = Linker A-A (same linker type)
-            # 2_2 = Linker B-B (same linker type)
-            aa_fastq_r1 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R1.fastq')
-            aa_fastq_r2 = str(step_dirs['linker_filtering'] / 'filtered.1_1.R2.fastq')
-            bb_fastq_r1 = str(step_dirs['linker_filtering'] / 'filtered.2_2.R1.fastq')
-            bb_fastq_r2 = str(step_dirs['linker_filtering'] / 'filtered.2_2.R2.fastq')
+            # Use filtered files for next step
+            # For DUAL-linker protocols: Only use AA (1_1) and BB (2_2) - same linker pairs
+            # For SINGLE-linker protocols (linkers are reverse complements): Use ALL pairs (1_1, 1_2, 2_1, 2_2)
+            #   because AB and BA pairs are valid interactions, not chimeric artifacts
             
-            # Check which linker files exist (single linker mode only has 1_1)
-            has_aa = Path(aa_fastq_r1).exists() and Path(aa_fastq_r1).stat().st_size > 0
-            has_bb = Path(bb_fastq_r1).exists() and Path(bb_fastq_r1).stat().st_size > 0
+            # Check if linkers are reverse complements (single-linker protocol)
+            from Bio.Seq import Seq
+            linker_a = args.linker_a.upper()
+            linker_b = args.linker_b.upper() if args.linker_b else str(Seq(linker_a).reverse_complement())
+            is_single_linker = (linker_b == str(Seq(linker_a).reverse_complement()))
+            
+            if is_single_linker:
+                logger.info("  NOTE: Linkers are reverse complements - using ALL linker pairs (single-linker protocol)")
+            
+            # Define all possible linker pair files
+            linker_pair_files = {
+                'AA': ('filtered.1_1.R1.fastq', 'filtered.1_1.R2.fastq'),
+                'AB': ('filtered.1_2.R1.fastq', 'filtered.1_2.R2.fastq'),
+                'BA': ('filtered.2_1.R1.fastq', 'filtered.2_1.R2.fastq'),
+                'BB': ('filtered.2_2.R1.fastq', 'filtered.2_2.R2.fastq'),
+            }
             
             linker_files = []
-            if has_aa:
-                linker_files.append(('AA', aa_fastq_r1, aa_fastq_r2))
-            if has_bb:
-                linker_files.append(('BB', bb_fastq_r1, bb_fastq_r2))
+            for pair_name, (r1_name, r2_name) in linker_pair_files.items():
+                r1_path = str(step_dirs['linker_filtering'] / r1_name)
+                r2_path = str(step_dirs['linker_filtering'] / r2_name)
+                
+                # For dual-linker: only use AA and BB (same-linker pairs)
+                # For single-linker: use all pairs
+                if not is_single_linker and pair_name in ('AB', 'BA'):
+                    continue
+                
+                if Path(r1_path).exists() and Path(r1_path).stat().st_size > 0:
+                    linker_files.append((pair_name, r1_path, r2_path))
             
             if not linker_files:
                 raise FileNotFoundError("No linker-filtered FASTQ files found!")
             
-            logger.info(f"  Found {len(linker_files)} linker type(s) to map: {[lf[0] for lf in linker_files]}")
+            total_pairs = sum(1 for lf in linker_files)
+            logger.info(f"  Found {total_pairs} linker type(s) to map: {[lf[0] for lf in linker_files]}")
+            if is_single_linker:
+                logger.info(f"  Single-linker mode: ALL pairs (AA, AB, BA, BB) represent valid interactions")
         else:
             # HiChIP uses original FASTQs directly (no linker filtering needed)
             linker_files = [('single', args.fastq_r1, args.fastq_r2)]
