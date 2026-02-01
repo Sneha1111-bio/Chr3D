@@ -119,6 +119,7 @@ def cmd_map(args):
         mapping_quality_cutoff=args.mapping_quality,
         n_threads=args.threads,
         use_bwa_mem=args.use_bwa_mem,
+        use_single_end=getattr(args, 'use_single_end', False),
         self_ligation_cutoff=args.self_ligation_cutoff
     )
     
@@ -576,12 +577,14 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             
             # Use BWA-MEM by default, unless --use-bwa-aln is specified
             use_bwa_mem = not getattr(args, 'use_bwa_aln', False)
+            use_single_end = getattr(args, 'use_single_end', False)
             
             mapper = PETMapper(
                 genome_index=args.genome_index,
                 mapping_quality_cutoff=args.mapping_quality,
                 n_threads=args.threads,
                 use_bwa_mem=use_bwa_mem,
+                use_single_end=use_single_end,
                 self_ligation_cutoff=args.self_ligation_cutoff
             )
             
@@ -1102,6 +1105,7 @@ For more information: https://github.com/rudrajoshi2481/Chr3D
     run_parser.add_argument('--threads', type=int, default=24, help='Number of threads (default: 24)')
     run_parser.add_argument('--use-bwa-mem', action='store_true', default=True, help='Use BWA-MEM (default: True)')
     run_parser.add_argument('--use-bwa-aln', action='store_true', help='Use BWA-ALN instead of BWA-MEM')
+    run_parser.add_argument('--use-single-end', action='store_true', help='Use BWA-ALN + SAMSE for very short reads (<35bp)')
     
     # Linker filtering parameters
     run_parser.add_argument('--min-tag-length', type=int, default=18,

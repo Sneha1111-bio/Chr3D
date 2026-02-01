@@ -148,14 +148,14 @@ def _map_chunk_worker(args: Tuple) -> Tuple[str, Dict]:
     Args:
         args: Tuple of (chunk_r1, chunk_r2, chunk_prefix, output_dir, 
               genome_index, mapping_quality_cutoff, n_threads, use_bwa_mem,
-              min_insert_size, max_insert_size, self_ligation_cutoff)
+              use_single_end, min_insert_size, max_insert_size, self_ligation_cutoff)
               
     Returns:
         Tuple of (bedpe_file_path, stats_dict)
     """
     (chunk_r1, chunk_r2, chunk_prefix, output_dir, 
      genome_index, mapping_quality_cutoff, n_threads, use_bwa_mem,
-     min_insert_size, max_insert_size, self_ligation_cutoff) = args
+     use_single_end, min_insert_size, max_insert_size, self_ligation_cutoff) = args
     
     # Create chunk-specific mapper (avoid pickling self)
     chunk_mapper = PETMapper(
@@ -163,6 +163,7 @@ def _map_chunk_worker(args: Tuple) -> Tuple[str, Dict]:
         mapping_quality_cutoff=mapping_quality_cutoff,
         n_threads=n_threads,
         use_bwa_mem=use_bwa_mem,
+        use_single_end=use_single_end,
         min_insert_size=min_insert_size,
         max_insert_size=max_insert_size,
         self_ligation_cutoff=self_ligation_cutoff
@@ -202,6 +203,7 @@ class PETMapper:
         mapping_quality_cutoff: int = 30,
         n_threads: int = 4,
         use_bwa_mem: bool = False,  # Default to BWA-ALN for short tags
+        use_single_end: bool = False,  # Use SAMSE instead of SAMPE for very short reads
         min_insert_size: int = 100,
         max_insert_size: int = 100000,
         self_ligation_cutoff: int = 8000
@@ -214,14 +216,21 @@ class PETMapper:
             mapping_quality_cutoff: Minimum mapping quality (default: 30)
             n_threads: Number of threads for BWA/SAMtools
             use_bwa_mem: Use BWA-MEM (True) or BWA-ALN (False, default for short reads)
+            use_single_end: Use SAMSE instead of SAMPE for very short reads (<35bp)
             min_insert_size: Minimum insert size (default: 100)
             max_insert_size: Maximum insert size (default: 100000)
             self_ligation_cutoff: Max span for self-ligation filtering (default: 8000)
+            
+        Alignment Mode Selection:
+            - use_bwa_mem=True: BWA-MEM (fast, for reads >= 55bp)
+            - use_bwa_mem=False, use_single_end=False: BWA-ALN + SAMPE (paired-end, for reads 35-55bp)
+            - use_bwa_mem=False, use_single_end=True: BWA-ALN + SAMSE (single-end, for reads < 35bp)
         """
         self.genome_index = genome_index
         self.mapping_quality_cutoff = mapping_quality_cutoff
         self.n_threads = n_threads
         self.use_bwa_mem = use_bwa_mem
+        self.use_single_end = use_single_end
         self.min_insert_size = min_insert_size
         self.max_insert_size = max_insert_size
         self.self_ligation_cutoff = self_ligation_cutoff
@@ -245,11 +254,19 @@ class PETMapper:
             'not_properly_paired': 0
         }
         
+        # Determine alignment mode string for logging
+        if use_bwa_mem:
+            aligner_mode = "BWA-MEM (fast, for reads >= 55bp)"
+        elif use_single_end:
+            aligner_mode = "BWA-ALN + SAMSE (single-end, for very short reads < 35bp)"
+        else:
+            aligner_mode = "BWA-ALN + SAMPE (paired-end, for reads 35-55bp)"
+        
         logger.info(f"Initialized PETMapper (v2 - CORRECTED)")
         logger.info(f"Genome index: {genome_index}")
         logger.info(f"Mapping quality cutoff: {mapping_quality_cutoff}")
         logger.info(f"Threads: {n_threads}")
-        logger.info(f"BWA mode: {'MEM' if use_bwa_mem else 'ALN (recommended for short tags)'}")
+        logger.info(f"BWA mode: {aligner_mode}")
         logger.info(f"Self-ligation cutoff: {self_ligation_cutoff}bp")
     
     def _validate_genome_index(self):
@@ -420,6 +437,153 @@ class PETMapper:
         except FileNotFoundError:
             logger.error("✗ BWA not found. Please install BWA or activate rowan-hic environment.")
             return False
+    
+    def run_bwa_aln_single(
+        self,
+        fastq_r1: str,
+        fastq_r2: str,
+        output_sam: str
+    ) -> bool:
+        """
+        Run BWA-ALN in SINGLE-END mode using samse for each read, then merge.
+        
+        This is for very short reads (<35bp) where paired-end alignment may fail.
+        Each read is aligned independently, then pairs are reconstructed.
+        
+        Args:
+            fastq_r1: R1 FASTQ file
+            fastq_r2: R2 FASTQ file
+            output_sam: Output SAM file (merged)
+            
+        Returns:
+            True if successful
+        """
+        sai_r1 = output_sam.replace('.sam', '.R1.sai')
+        sai_r2 = output_sam.replace('.sam', '.R2.sai')
+        sam_r1 = output_sam.replace('.sam', '.R1.sam')
+        sam_r2 = output_sam.replace('.sam', '.R2.sam')
+        
+        logger.info(f"Running BWA-ALN (single-end mode): {fastq_r1} + {fastq_r2} → {output_sam}")
+        logger.info("  Using SAMSE for each read independently (for very short reads)")
+        
+        try:
+            # Step 1: bwa aln for R1
+            cmd_aln_r1 = [
+                'bwa', 'aln',
+                '-t', str(self.n_threads),
+                '-n', '2',  # Max edit distance
+                self.genome_index,
+                fastq_r1
+            ]
+            
+            with open(sai_r1, 'w') as out_f:
+                subprocess.run(cmd_aln_r1, stdout=out_f, stderr=subprocess.PIPE, check=True)
+            logger.info("  ✓ R1 alignment index created")
+            
+            # Step 2: bwa aln for R2
+            cmd_aln_r2 = [
+                'bwa', 'aln',
+                '-t', str(self.n_threads),
+                '-n', '2',
+                self.genome_index,
+                fastq_r2
+            ]
+            
+            with open(sai_r2, 'w') as out_f:
+                subprocess.run(cmd_aln_r2, stdout=out_f, stderr=subprocess.PIPE, check=True)
+            logger.info("  ✓ R2 alignment index created")
+            
+            # Step 3: bwa samse for R1 (single-end alignment)
+            cmd_samse_r1 = [
+                'bwa', 'samse',
+                self.genome_index,
+                sai_r1,
+                fastq_r1
+            ]
+            
+            with open(sam_r1, 'w') as out_f:
+                subprocess.run(cmd_samse_r1, stdout=out_f, stderr=subprocess.PIPE, check=True)
+            logger.info("  ✓ R1 SAMSE completed")
+            
+            # Step 4: bwa samse for R2 (single-end alignment)
+            cmd_samse_r2 = [
+                'bwa', 'samse',
+                self.genome_index,
+                sai_r2,
+                fastq_r2
+            ]
+            
+            with open(sam_r2, 'w') as out_f:
+                subprocess.run(cmd_samse_r2, stdout=out_f, stderr=subprocess.PIPE, check=True)
+            logger.info("  ✓ R2 SAMSE completed")
+            
+            # Step 5: Merge R1 and R2 SAM files into paired format
+            self._merge_single_end_sams(sam_r1, sam_r2, output_sam)
+            logger.info("  ✓ SAM files merged")
+            
+            # Clean up intermediate files
+            for f in [sai_r1, sai_r2, sam_r1, sam_r2]:
+                if os.path.exists(f):
+                    os.remove(f)
+            
+            logger.info(f"✓ BWA-ALN (single-end) completed: {output_sam}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"✗ BWA-ALN (single-end) failed: {e}")
+            return False
+        except FileNotFoundError:
+            logger.error("✗ BWA not found. Please install BWA or activate rowan-hic environment.")
+            return False
+    
+    def _merge_single_end_sams(
+        self,
+        sam_r1: str,
+        sam_r2: str,
+        output_sam: str
+    ):
+        """
+        Merge two single-end SAM files into a paired-end format.
+        
+        Reads with the same name from R1 and R2 are paired together.
+        """
+        logger.info(f"Merging single-end SAMs: {sam_r1} + {sam_r2} → {output_sam}")
+        
+        # Read R1 alignments into dictionary
+        r1_alignments = {}
+        header_lines = []
+        
+        with open(sam_r1, 'r') as f:
+            for line in f:
+                if line.startswith('@'):
+                    header_lines.append(line)
+                else:
+                    fields = line.strip().split('\t')
+                    if len(fields) >= 11:
+                        read_name = fields[0]
+                        r1_alignments[read_name] = line
+        
+        # Write merged SAM
+        with open(output_sam, 'w') as out_f:
+            # Write header
+            for header in header_lines:
+                out_f.write(header)
+            
+            # Read R2 and pair with R1
+            with open(sam_r2, 'r') as f:
+                for line in f:
+                    if line.startswith('@'):
+                        continue
+                    
+                    fields = line.strip().split('\t')
+                    if len(fields) >= 11:
+                        read_name = fields[0]
+                        
+                        if read_name in r1_alignments:
+                            # Write both R1 and R2 alignments
+                            out_f.write(r1_alignments[read_name])
+                            out_f.write(line)
+        
+        logger.info(f"  Merged {len(r1_alignments)} read pairs")
     
     def sort_sam_by_name(
         self,
@@ -649,14 +813,9 @@ class PETMapper:
         chr1 = r1.reference_name
         chr2 = r2.reference_name
         
-        # Sanity check: for cis interactions, filter excessive distances
-        # This catches invalid pairs that BWA may have mapped to distant regions
-        MAX_CIS_DISTANCE = 10_000_000  # 10Mb - reasonable max for chromatin interactions
-        if chr1 == chr2:
-            distance = abs(pos1 - pos2)
-            if distance > MAX_CIS_DISTANCE:
-                stats['excessive_distance'] += 1
-                return  # Skip this pair
+        # NOTE: Removed 10Mb distance cap - long-range chromatin interactions (>10Mb)
+        # are biologically valid and important for ChIA-PET analysis.
+        # Distance-based filtering should happen in categorization step, not mapping.
         
         # Use single position for ChIA-PET (5' end)
         start1 = pos1
@@ -886,7 +1045,7 @@ class PETMapper:
                 args = (
                     chunk_r1, chunk_r2, f"chunk_{idx:03d}", chunk_output_dir,
                     self.genome_index, self.mapping_quality_cutoff,
-                    threads_per_chunk, self.use_bwa_mem,
+                    threads_per_chunk, self.use_bwa_mem, self.use_single_end,
                     self.min_insert_size, self.max_insert_size, self.self_ligation_cutoff
                 )
                 worker_args.append(args)
@@ -1031,14 +1190,16 @@ class PETMapper:
         logger.info(f"Output: {dedup_bedpe if remove_duplicates else bedpe_file}")
         logger.info("=" * 60)
         
-        # Step 1: Paired-end alignment
+        # Step 1: Alignment (select mode based on settings)
         if self.use_bwa_mem:
             success = self.run_bwa_mem_paired(fastq_r1, fastq_r2, str(paired_sam))
+        elif self.use_single_end:
+            success = self.run_bwa_aln_single(fastq_r1, fastq_r2, str(paired_sam))
         else:
             success = self.run_bwa_aln_paired(fastq_r1, fastq_r2, str(paired_sam))
         
         if not success:
-            raise RuntimeError("Paired-end alignment failed")
+            raise RuntimeError("Alignment failed")
         
         # Step 2: Sort by name
         success = self.sort_sam_by_name(str(paired_sam), str(sorted_sam))
