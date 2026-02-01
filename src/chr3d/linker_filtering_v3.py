@@ -356,6 +356,7 @@ def process_chunk_file(args):
         'failed_alignment_score': 0,
         'failed_tag_length': 0,
         'failed_ambiguous_linker': 0,
+        'failed_read_id_mismatch': 0,
         'linker_composition': defaultdict(int),
         'reverse_complement_matches': 0,
         'alignments': 0
@@ -389,6 +390,11 @@ def process_chunk_file(args):
                 if not r1_lines[0]:
                     break
                 
+                # Check if R2 also has data (files should be same length)
+                if not r2_lines[0]:
+                    logger.warning(f"R2 file ended before R1 at read {stats['total_reads']}")
+                    break
+                
                 stats['total_reads'] += 1
                 
                 read1_id = r1_lines[0].strip()
@@ -397,6 +403,29 @@ def process_chunk_file(args):
                 read2_id = r2_lines[0].strip()
                 read2_seq = r2_lines[1].strip()
                 read2_qual = r2_lines[3].strip()
+                
+                # CRITICAL: Validate read IDs match (fix for pairing bug)
+                # Extract base read ID (remove description after space, keep core ID)
+                r1_base_id = read1_id.split()[0]  # Remove description after space
+                r2_base_id = read2_id.split()[0]
+                
+                # Remove @ prefix if present
+                if r1_base_id.startswith('@'):
+                    r1_base_id = r1_base_id[1:]
+                if r2_base_id.startswith('@'):
+                    r2_base_id = r2_base_id[1:]
+                
+                # Only remove /1 or /2 suffix (NOT .1 or .2 which are SRA read numbers)
+                if r1_base_id.endswith('/1'):
+                    r1_base_id = r1_base_id[:-2]
+                if r2_base_id.endswith('/2'):
+                    r2_base_id = r2_base_id[:-2]
+                
+                if r1_base_id != r2_base_id:
+                    stats['failed_read_id_mismatch'] += 1
+                    if stats['failed_read_id_mismatch'] <= 5:
+                        logger.warning(f"Read ID mismatch: R1={read1_id[:60]} vs R2={read2_id[:60]}")
+                    continue
                 
                 # Find best linker for R1
                 linker1_idx, score1, tag_end1, diff1, is_rc1 = find_best_linker_parasail(
