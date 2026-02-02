@@ -148,14 +148,16 @@ def _map_chunk_worker(args: Tuple) -> Tuple[str, Dict]:
     Args:
         args: Tuple of (chunk_r1, chunk_r2, chunk_prefix, output_dir, 
               genome_index, mapping_quality_cutoff, n_threads, use_bwa_mem,
-              use_single_end, min_insert_size, max_insert_size, self_ligation_cutoff)
+              use_single_end, min_insert_size, max_insert_size, self_ligation_cutoff,
+              chunk_idx, total_chunks)
               
     Returns:
         Tuple of (bedpe_file_path, stats_dict)
     """
     (chunk_r1, chunk_r2, chunk_prefix, output_dir, 
      genome_index, mapping_quality_cutoff, n_threads, use_bwa_mem,
-     use_single_end, min_insert_size, max_insert_size, self_ligation_cutoff) = args
+     use_single_end, min_insert_size, max_insert_size, self_ligation_cutoff,
+     chunk_idx, total_chunks) = args
     
     # Create chunk-specific mapper (avoid pickling self)
     chunk_mapper = PETMapper(
@@ -166,8 +168,11 @@ def _map_chunk_worker(args: Tuple) -> Tuple[str, Dict]:
         use_single_end=use_single_end,
         min_insert_size=min_insert_size,
         max_insert_size=max_insert_size,
-        self_ligation_cutoff=self_ligation_cutoff
+        self_ligation_cutoff=self_ligation_cutoff,
+        parallel_jobs=0  # No nested parallelism
     )
+    
+    logger.info(f"  [Chunk {chunk_idx+1}/{total_chunks}] Starting alignment with {n_threads} threads...")
     
     # Map chunk (creates SAM → BEDPE)
     # IMPORTANT: Force parallel=False to avoid nested parallelism
@@ -206,7 +211,8 @@ class PETMapper:
         use_single_end: bool = False,  # Use SAMSE instead of SAMPE for very short reads
         min_insert_size: int = 100,
         max_insert_size: int = 100000,
-        self_ligation_cutoff: int = 8000
+        self_ligation_cutoff: int = 8000,
+        parallel_jobs: int = 0  # Number of parallel BWA processes (0=auto)
     ):
         """
         Initialize PET mapper.
@@ -220,11 +226,16 @@ class PETMapper:
             min_insert_size: Minimum insert size (default: 100)
             max_insert_size: Maximum insert size (default: 100000)
             self_ligation_cutoff: Max span for self-ligation filtering (default: 8000)
+            parallel_jobs: Number of parallel BWA processes (0=auto-detect based on threads)
             
         Alignment Mode Selection:
             - use_bwa_mem=True: BWA-MEM (fast, for reads >= 55bp)
             - use_bwa_mem=False, use_single_end=False: BWA-ALN + SAMPE (paired-end, for reads 35-55bp)
             - use_bwa_mem=False, use_single_end=True: BWA-ALN + SAMSE (single-end, for reads < 35bp)
+            
+        Parallel Processing:
+            - parallel_jobs=0: Auto-detect (threads/4 for MEM, threads for ALN)
+            - parallel_jobs=N: Run N parallel BWA processes, each with threads/N threads
         """
         self.genome_index = genome_index
         self.mapping_quality_cutoff = mapping_quality_cutoff
@@ -234,6 +245,7 @@ class PETMapper:
         self.min_insert_size = min_insert_size
         self.max_insert_size = max_insert_size
         self.self_ligation_cutoff = self_ligation_cutoff
+        self.parallel_jobs = parallel_jobs
         
         # Validate genome index exists
         self._validate_genome_index()
@@ -993,16 +1005,24 @@ class PETMapper:
         This avoids SAM header conflicts and is more efficient.
         
         Especially beneficial for BWA-ALN where SAMPE is single-threaded.
-        For BWA-MEM, single job is usually sufficient.
+        For BWA-MEM with parallel_jobs > 1, runs multiple BWA-MEM processes.
         """
         start_time = time.time()
         
         if n_chunks is None:
-            # Cap chunks to avoid spawning too many concurrent BWA processes
-            # Each BWA-ALN loads the full genome index (~3-5GB for hg38)
-            # More than 24 concurrent processes causes memory/file handle issues
-            max_concurrent_bwa = 24
-            n_chunks = min(self.n_threads, max_concurrent_bwa) if not self.use_bwa_mem else 6
+            # Use parallel_jobs if specified, otherwise auto-detect
+            if self.parallel_jobs > 0:
+                n_chunks = self.parallel_jobs
+            else:
+                # Auto-detect based on aligner and threads
+                # BWA-ALN: SAMPE is single-threaded, so use many chunks
+                # BWA-MEM: Multi-threaded, but can still benefit from parallel processes
+                if self.use_bwa_mem:
+                    # For BWA-MEM: default to threads/4 parallel jobs (each with 4 threads)
+                    n_chunks = max(1, self.n_threads // 4)
+                else:
+                    # For BWA-ALN: use more chunks since SAMPE is single-threaded
+                    n_chunks = min(self.n_threads, 24)
         
         if output_dir is None:
             output_dir = str(Path(fastq_r1).parent)
@@ -1035,9 +1055,16 @@ class PETMapper:
             map_start = time.time()
             logger.info(f"Step 2: Mapping {n_chunks} chunks in parallel...")
             
-            # For BWA-ALN, give each chunk 1 thread (SAMPE is single-threaded)
-            # For BWA-MEM, split threads across chunks
-            threads_per_chunk = 1 if not self.use_bwa_mem else max(1, self.n_threads // n_chunks)
+            # Calculate threads per chunk
+            # For BWA-ALN: ALN step uses threads, SAMPE is single-threaded
+            # For BWA-MEM: Distribute threads across parallel processes
+            threads_per_chunk = max(1, self.n_threads // n_chunks)
+            
+            # Log resource allocation
+            total_threads_used = threads_per_chunk * n_chunks
+            logger.info(f"  Thread allocation: {n_chunks} jobs × {threads_per_chunk} threads = {total_threads_used} total")
+            if total_threads_used < self.n_threads:
+                logger.info(f"  Note: {self.n_threads - total_threads_used} threads unused (consider adjusting --parallel-jobs)")
             
             # Prepare worker arguments
             worker_args = []
@@ -1046,7 +1073,8 @@ class PETMapper:
                     chunk_r1, chunk_r2, f"chunk_{idx:03d}", chunk_output_dir,
                     self.genome_index, self.mapping_quality_cutoff,
                     threads_per_chunk, self.use_bwa_mem, self.use_single_end,
-                    self.min_insert_size, self.max_insert_size, self.self_ligation_cutoff
+                    self.min_insert_size, self.max_insert_size, self.self_ligation_cutoff,
+                    idx, n_chunks  # Add chunk index and total for logging
                 )
                 worker_args.append(args)
             
@@ -1055,8 +1083,7 @@ class PETMapper:
             all_stats = []
             
             # Cap max_workers to avoid resource exhaustion
-            # Even with many chunks, limit concurrent BWA processes
-            max_workers = min(n_chunks, 24)
+            max_workers = min(n_chunks, 48)  # Increased cap for high-thread systems
             logger.info(f"  Using {max_workers} parallel workers for {n_chunks} chunks")
             
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -1153,13 +1180,19 @@ class PETMapper:
         Returns:
             Dictionary with mapping statistics
         """
-        # Auto-detect parallel mode based on aligner
+        # Auto-detect parallel mode based on aligner and parallel_jobs setting
         if parallel is None:
-            parallel = not self.use_bwa_mem
-            if parallel:
+            # If parallel_jobs is explicitly set, use parallel mode
+            if self.parallel_jobs > 0:
+                parallel = True
+                logger.info(f"Using PARALLEL mode ({self.parallel_jobs} jobs requested via --parallel-jobs)")
+            elif not self.use_bwa_mem:
+                parallel = True
                 logger.info("Auto-detected: Using PARALLEL mode (BWA-ALN has SAMPE bottleneck)")
             else:
+                parallel = False
                 logger.info("Auto-detected: Using SINGLE mode (BWA-MEM is already multi-threaded)")
+                logger.info("  Tip: Use --parallel-jobs N to run N parallel BWA-MEM processes for faster mapping")
         
         # Route to appropriate method
         if parallel:

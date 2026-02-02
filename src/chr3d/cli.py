@@ -598,6 +598,7 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             # Use BWA-MEM by default, unless --use-bwa-aln is specified
             use_bwa_mem = not getattr(args, 'use_bwa_aln', False)
             use_single_end = getattr(args, 'use_single_end', False)
+            parallel_jobs = getattr(args, 'parallel_jobs', 0)
             
             mapper = PETMapper(
                 genome_index=args.genome_index,
@@ -605,7 +606,8 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 n_threads=args.threads,
                 use_bwa_mem=use_bwa_mem,
                 use_single_end=use_single_end,
-                self_ligation_cutoff=args.self_ligation_cutoff
+                self_ligation_cutoff=args.self_ligation_cutoff,
+                parallel_jobs=parallel_jobs
             )
             
             # Map each linker type separately, then merge
@@ -1126,6 +1128,9 @@ For more information: https://github.com/rudrajoshi2481/Chr3D
     run_parser.add_argument('--use-bwa-mem', action='store_true', default=True, help='Use BWA-MEM (default: True)')
     run_parser.add_argument('--use-bwa-aln', action='store_true', help='Use BWA-ALN instead of BWA-MEM')
     run_parser.add_argument('--use-single-end', action='store_true', help='Use BWA-ALN + SAMSE for very short reads (<35bp)')
+    run_parser.add_argument('--parallel-jobs', type=int, default=0,
+                           help='Number of parallel BWA processes (0=auto). Use this to maximize CPU utilization. '
+                                'E.g., --threads 60 --parallel-jobs 15 runs 15 parallel BWA processes with 4 threads each.')
     
     # Linker filtering parameters
     run_parser.add_argument('--min-tag-length', type=int, default=18,
