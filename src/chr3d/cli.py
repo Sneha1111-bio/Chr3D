@@ -518,6 +518,11 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                     min_alignment_score=args.min_score,
                     min_tag_length=args.min_tag_length,
                     max_tag_length=args.max_tag_length,
+                    min_second_best_diff=getattr(args, 'min_second_best_diff', 3),
+                    match_score=getattr(args, 'match_score', 1),
+                    mismatch_penalty=getattr(args, 'mismatch_penalty', 1),
+                    gap_open_penalty=getattr(args, 'gap_open_penalty', 1),
+                    gap_extend_penalty=getattr(args, 'gap_extend_penalty', 1),
                     n_threads=args.threads
                 )
                 
@@ -533,18 +538,20 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 logger.info(f"  QC written to: {step_dirs['qc']}")
             
             # Use filtered files for next step
-            # For DUAL-linker protocols: Only use AA (1_1) and BB (2_2) - same linker pairs
-            # For SINGLE-linker protocols (linkers are reverse complements): Use ALL pairs (1_1, 1_2, 2_1, 2_2)
-            #   because AB and BA pairs are valid interactions, not chimeric artifacts
+            # ChIA-PET Tool V3 convention:
+            #   - AA (1_1) and BB (2_2) = Same-linker PETs (canonical, used for analysis)
+            #   - AB (1_2) and BA (2_1) = Different-linker PETs (non-canonical, typically discarded)
+            #
+            # IMPORTANT: Even when linkers A and B are reverse complements (as in long-read ChIA-PET),
+            # they are still DISTINCT half-linkers in the ligation chemistry. Only same-linker PETs
+            # (AA/BB) represent true proximity ligation events.
+            #
+            # The --use-all-linker-pairs flag enables using AB/BA pairs, which is ONLY appropriate for:
+            #   - True single-linker protocols (one symmetric linker, no A/B distinction)
+            #   - HiChIP-like protocols where linker orientation doesn't matter
             
-            # Check if linkers are reverse complements (single-linker protocol)
-            from Bio.Seq import Seq
-            linker_a = args.linker_a.upper()
-            linker_b = args.linker_b.upper() if args.linker_b else str(Seq(linker_a).reverse_complement())
-            is_single_linker = (linker_b == str(Seq(linker_a).reverse_complement()))
-            
-            if is_single_linker:
-                logger.info("  NOTE: Linkers are reverse complements - using ALL linker pairs (single-linker protocol)")
+            # Check for explicit --use-all-linker-pairs flag (non-V3 mode)
+            use_all_pairs = getattr(args, 'use_all_linker_pairs', False)
             
             # Define all possible linker pair files
             linker_pair_files = {
@@ -554,14 +561,37 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 'BB': ('filtered.2_2.R1.fastq', 'filtered.2_2.R2.fastq'),
             }
             
+            # Count available PETs for QC reporting
+            same_linker_count = 0
+            diff_linker_count = 0
+            for pair_name, (r1_name, _) in linker_pair_files.items():
+                r1_path = step_dirs['linker_filtering'] / r1_name
+                if r1_path.exists():
+                    # Count lines / 4 = number of reads
+                    try:
+                        with open(r1_path) as f:
+                            count = sum(1 for _ in f) // 4
+                        if pair_name in ('AA', 'BB'):
+                            same_linker_count += count
+                        else:
+                            diff_linker_count += count
+                    except:
+                        pass
+            
+            total_valid = same_linker_count + diff_linker_count
+            if total_valid > 0:
+                logger.info(f"  Linker composition:")
+                logger.info(f"    Same-linker PETs (AA+BB): {same_linker_count:,} ({100*same_linker_count/total_valid:.2f}%)")
+                logger.info(f"    Different-linker PETs (AB+BA): {diff_linker_count:,} ({100*diff_linker_count/total_valid:.2f}%)")
+            
             linker_files = []
             for pair_name, (r1_name, r2_name) in linker_pair_files.items():
                 r1_path = str(step_dirs['linker_filtering'] / r1_name)
                 r2_path = str(step_dirs['linker_filtering'] / r2_name)
                 
-                # For dual-linker: only use AA and BB (same-linker pairs)
-                # For single-linker: use all pairs
-                if not is_single_linker and pair_name in ('AB', 'BA'):
+                # DEFAULT: Only use same-linker PETs (AA/BB) - V3 compatible
+                # With --use-all-linker-pairs: Use all pairs (AA, AB, BA, BB)
+                if not use_all_pairs and pair_name in ('AB', 'BA'):
                     continue
                 
                 if Path(r1_path).exists() and Path(r1_path).stat().st_size > 0:
@@ -570,10 +600,12 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             if not linker_files:
                 raise FileNotFoundError("No linker-filtered FASTQ files found!")
             
-            total_pairs = sum(1 for lf in linker_files)
-            logger.info(f"  Found {total_pairs} linker type(s) to map: {[lf[0] for lf in linker_files]}")
-            if is_single_linker:
-                logger.info(f"  Single-linker mode: ALL pairs (AA, AB, BA, BB) represent valid interactions")
+            logger.info(f"  Using {len(linker_files)} linker type(s) for mapping: {[lf[0] for lf in linker_files]}")
+            if use_all_pairs:
+                logger.info("  WARNING: --use-all-linker-pairs enabled - using AB/BA pairs (non-V3 mode)")
+                logger.info("           This is only appropriate for true single-linker protocols!")
+            else:
+                logger.info("  Using same-linker PETs only (AA+BB) - V3 compatible mode")
         else:
             # HiChIP uses original FASTQs directly (no linker filtering needed)
             linker_files = [('single', args.fastq_r1, args.fastq_r2)]
@@ -1132,13 +1164,29 @@ For more information: https://github.com/rudrajoshi2481/Chr3D
                            help='Number of parallel BWA processes (0=auto). Use this to maximize CPU utilization. '
                                 'E.g., --threads 60 --parallel-jobs 15 runs 15 parallel BWA processes with 4 threads each.')
     
-    # Linker filtering parameters
+    # Linker filtering parameters (aligned with ChIA-PET Tool V3 defaults)
     run_parser.add_argument('--min-tag-length', type=int, default=18,
-                           help='Minimum tag length after linker removal (default: 18)')
+                           help='Minimum tag length after linker removal (default: 18, same as V3)')
     run_parser.add_argument('--max-tag-length', type=int, default=1000,
                            help='Maximum tag length (default: 1000)')
     run_parser.add_argument('--min-score', type=int, default=14,
-                           help='Minimum linker alignment score (default: 14)')
+                           help='Minimum linker alignment score (default: 14, same as V3 long-read mode)')
+    run_parser.add_argument('--min-second-best-diff', type=int, default=3,
+                           help='Min score difference between best and 2nd best linker match to avoid ambiguity (default: 3, same as V3)')
+    run_parser.add_argument('--use-all-linker-pairs', action='store_true',
+                           help='Use ALL linker pairs (AA, AB, BA, BB) instead of just same-linker PETs (AA+BB). '
+                                'WARNING: This is NOT V3 compatible and should only be used for true single-linker protocols '
+                                'where there is no A/B half-linker distinction. Default behavior uses only AA+BB (V3 compatible).')
+    
+    # Advanced linker scoring parameters (for debugging/tuning)
+    run_parser.add_argument('--match-score', type=int, default=1,
+                           help='Score for matching bases in linker alignment (default: 1)')
+    run_parser.add_argument('--mismatch-penalty', type=int, default=1,
+                           help='Penalty for mismatches in linker alignment (default: 1)')
+    run_parser.add_argument('--gap-open-penalty', type=int, default=1,
+                           help='Gap opening penalty in linker alignment (default: 1)')
+    run_parser.add_argument('--gap-extend-penalty', type=int, default=1,
+                           help='Gap extension penalty in linker alignment (default: 1)')
     
     # ChIA-PET/HiChIP parameters
     run_parser.add_argument('--genome-size', default='hs', help='Genome size for MACS3 (default: hs)')
