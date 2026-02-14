@@ -332,9 +332,52 @@ def process_read_pair_worker(args):
     return result, None, alignment_count
 
 
+# Linker label helpers for ChIA-PET Tool V3 categories
+# Original tool uses: AA, AB, BA, BB, AX, XA, BX, XB, XX
+# Where X = no linker detected in that read
+_LINKER_NAMES = {0: 'A', 1: 'B'}
+_X = 'X'  # No linker detected
+
+
+def _make_category_key(r1_label, r2_label):
+    """Create a category string like 'AB', 'AX', 'XB', etc."""
+    return f"{r1_label}{r2_label}"
+
+
+def _is_same_linker(cat, linkers_are_rc_pairs):
+    """
+    Determine if a PET category is 'same-linker' per ChIA-PET Tool V3 logic.
+    
+    When linkers are reverse complement pairs (standard ChIA-PET):
+      - R1 reads forward strand, R2 reads reverse strand
+      - If original linker is A: R1 sees A, R2 sees revcomp(A) = B
+      - So AB and BA are SAME-linker (opposite strands of same linker)
+      - AA and BB are DIFF-linker (would require two different linkers)
+      - AX, XA, BX, XB are classified by the one detected linker (same-linker)
+    
+    When linkers are NOT RC pairs (independent barcodes):
+      - AA and BB are same-linker
+      - AB and BA are diff-linker
+      - AX/XA classified as same-linker A; BX/XB as same-linker B
+    """
+    if linkers_are_rc_pairs:
+        # AB, BA = same-linker (strand effect); AA, BB = diff-linker (rare)
+        # Single-read: AX, XA, BX, XB = same-linker (classified by detected read)
+        return cat in ('AB', 'BA', 'AX', 'XA', 'BX', 'XB')
+    else:
+        # Standard: AA, BB = same-linker; AB, BA = diff-linker
+        # Single-read: AX, XA = same-linker A; BX, XB = same-linker B
+        return cat in ('AA', 'BB', 'AX', 'XA', 'BX', 'XB')
+
+
 def process_chunk_file(args):
     """
     Process a chunk file and return filtered results.
+    
+    Implements ChIA-PET Tool V3 classification logic:
+    - Accepts PETs where EITHER read has a linker (not requiring both)
+    - Uses categories: AA, AB, BA, BB, AX, XA, BX, XB
+    - Strand-aware same-linker classification when linkers are RC pairs
     
     Args:
         args: Tuple of (chunk_r1, chunk_r2, output_dir, chunk_idx, params)
@@ -346,6 +389,7 @@ def process_chunk_file(args):
     
     linkers = params['linkers']
     linkers_rc = params['linkers_rc']
+    linkers_are_rc_pairs = params.get('linkers_are_rc_pairs', False)
     
     # Create substitution matrix
     matrix = parasail.matrix_create("ACGT", params['match'], -params['mismatch'])
@@ -353,24 +397,33 @@ def process_chunk_file(args):
     stats = {
         'total_reads': 0,
         'valid_pets': 0,
-        'failed_alignment_score': 0,
+        'failed_both_no_linker': 0,
         'failed_tag_length': 0,
         'failed_ambiguous_linker': 0,
         'failed_read_id_mismatch': 0,
         'linker_composition': defaultdict(int),
+        'category_counts': defaultdict(int),
+        'same_linker_pets': 0,
+        'diff_linker_pets': 0,
         'reverse_complement_matches': 0,
         'alignments': 0
     }
     
-    # Open output files
+    # Open output files — support all categories including single-read (X)
     output_path = Path(output_dir)
     n_linkers = len(linkers)
     output_files = {}
     
-    for i in range(n_linkers):
-        for j in range(n_linkers):
-            r1_file = output_path / f"chunk_{chunk_idx}.{i+1}_{j+1}.R1.fastq"
-            r2_file = output_path / f"chunk_{chunk_idx}.{i+1}_{j+1}.R2.fastq"
+    # All possible labels: linker indices + X (no linker)
+    all_labels = list(range(n_linkers)) + [_X]
+    for i in all_labels:
+        for j in all_labels:
+            if i == _X and j == _X:
+                continue  # Skip XX — both reads have no linker
+            i_str = str(i + 1) if isinstance(i, int) else i
+            j_str = str(j + 1) if isinstance(j, int) else j
+            r1_file = output_path / f"chunk_{chunk_idx}.{i_str}_{j_str}.R1.fastq"
+            r2_file = output_path / f"chunk_{chunk_idx}.{i_str}_{j_str}.R2.fastq"
             output_files[(i, j)] = {
                 'r1': open(r1_file, 'w'),
                 'r2': open(r2_file, 'w')
@@ -443,38 +496,83 @@ def process_chunk_file(args):
                 )
                 stats['alignments'] += len(linkers) * (2 if params['check_rc'] else 1)
                 
-                # Check alignment scores
-                if score1 < params['min_score'] or score2 < params['min_score']:
-                    stats['failed_alignment_score'] += 1
+                # Determine which reads pass the score threshold
+                r1_has_linker = score1 >= params['min_score']
+                r2_has_linker = score2 >= params['min_score']
+                
+                # FIX #1: Accept PETs where EITHER read has a linker
+                # (Original tool uses AX/XA/BX/XB categories for single-read)
+                if not r1_has_linker and not r2_has_linker:
+                    stats['failed_both_no_linker'] += 1
                     continue
                 
-                # Check tag lengths
-                tag_len1 = tag_end1
-                tag_len2 = tag_end2
+                # Validate passing reads: check tag length and ambiguity
+                r1_valid = False
+                r2_valid = False
                 
-                if (tag_len1 < params['min_tag'] or tag_len1 > params['max_tag'] or
-                    tag_len2 < params['min_tag'] or tag_len2 > params['max_tag']):
+                if r1_has_linker:
+                    tag_len1 = tag_end1
+                    if tag_len1 < params['min_tag'] or tag_len1 > params['max_tag']:
+                        r1_has_linker = False  # Demote to X
+                    elif diff1 < params['min_diff']:
+                        stats['failed_ambiguous_linker'] += 1
+                        r1_has_linker = False  # Demote to X (ambiguous)
+                    else:
+                        r1_valid = True
+                
+                if r2_has_linker:
+                    tag_len2 = tag_end2
+                    if tag_len2 < params['min_tag'] or tag_len2 > params['max_tag']:
+                        r2_has_linker = False  # Demote to X
+                    elif diff2 < params['min_diff']:
+                        stats['failed_ambiguous_linker'] += 1
+                        r2_has_linker = False  # Demote to X (ambiguous)
+                    else:
+                        r2_valid = True
+                
+                # After validation, need at least one valid read
+                if not r1_valid and not r2_valid:
                     stats['failed_tag_length'] += 1
                     continue
                 
-                # Check ambiguity
-                if diff1 < params['min_diff'] or diff2 < params['min_diff']:
-                    stats['failed_ambiguous_linker'] += 1
-                    continue
+                # Assign labels: linker index or X
+                r1_label = linker1_idx if r1_valid else _X
+                r2_label = linker2_idx if r2_valid else _X
                 
-                # Extract tags
-                tag1_seq = read1_seq[:tag_end1]
-                tag1_qual = read1_qual[:tag_end1]
-                tag2_seq = read2_seq[:tag_end2]
-                tag2_qual = read2_qual[:tag_end2]
+                # Extract tags — for reads with linker, trim to tag;
+                # for reads without linker (X), keep full read
+                if r1_valid:
+                    tag1_seq = read1_seq[:tag_end1]
+                    tag1_qual = read1_qual[:tag_end1]
+                else:
+                    tag1_seq = read1_seq
+                    tag1_qual = read1_qual
+                
+                if r2_valid:
+                    tag2_seq = read2_seq[:tag_end2]
+                    tag2_qual = read2_qual[:tag_end2]
+                else:
+                    tag2_seq = read2_seq
+                    tag2_qual = read2_qual
                 
                 # Write to output
-                key = (linker1_idx, linker2_idx)
+                key = (r1_label, r2_label)
                 output_files[key]['r1'].write(f"{read1_id}\n{tag1_seq}\n+\n{tag1_qual}\n")
                 output_files[key]['r2'].write(f"{read2_id}\n{tag2_seq}\n+\n{tag2_qual}\n")
                 
                 stats['valid_pets'] += 1
                 stats['linker_composition'][key] += 1
+                
+                # FIX #2: Strand-aware same/diff-linker classification
+                r1_name = _LINKER_NAMES.get(r1_label, _X) if isinstance(r1_label, int) else _X
+                r2_name = _LINKER_NAMES.get(r2_label, _X) if isinstance(r2_label, int) else _X
+                cat = _make_category_key(r1_name, r2_name)
+                stats['category_counts'][cat] += 1
+                
+                if _is_same_linker(cat, linkers_are_rc_pairs):
+                    stats['same_linker_pets'] += 1
+                else:
+                    stats['diff_linker_pets'] += 1
                 
                 if is_rc1 or is_rc2:
                     stats['reverse_complement_matches'] += 1
@@ -541,14 +639,15 @@ class LinkerFilterV3:
         
         # Auto-detect if linkers are already RC pairs (common in ChIA-PET)
         # If so, disable RC checking to avoid false ambiguity
-        linkers_are_rc_pairs = False
+        self.linkers_are_rc_pairs = False
         if len(linker_sequences) == 2:
             rc_of_first = reverse_complement(linker_sequences[0])
             if rc_of_first == linker_sequences[1]:
-                linkers_are_rc_pairs = True
+                self.linkers_are_rc_pairs = True
                 logger.info("  NOTE: Linkers are reverse complements of each other - disabling RC check")
+                logger.info("  NOTE: Strand-aware classification enabled (AB/BA = same-linker)")
         
-        if linkers_are_rc_pairs:
+        if self.linkers_are_rc_pairs:
             self.check_reverse_complement = False
         else:
             self.check_reverse_complement = check_reverse_complement
@@ -568,8 +667,10 @@ class LinkerFilterV3:
         logger.info(f"Initialized LinkerFilterV3 with parasail")
         logger.info(f"  SIMD instruction set: {self.simd_name}")
         logger.info(f"  Linker sequences: {len(linker_sequences)}")
+        logger.info(f"  Linkers are RC pairs: {self.linkers_are_rc_pairs}")
         logger.info(f"  Threads/processes: {self.n_threads}")
         logger.info(f"  Parameters: min_score={min_alignment_score}, min_tag={min_tag_length}, max_tag={max_tag_length}")
+        logger.info(f"  Single-read classification: ENABLED (AX/XA/BX/XB categories)")
     
     def split_fastq_pairs(
         self,
@@ -715,6 +816,7 @@ class LinkerFilterV3:
             params = {
                 'linkers': self.linker_sequences,
                 'linkers_rc': self.linker_sequences_rc,
+                'linkers_are_rc_pairs': self.linkers_are_rc_pairs,
                 'match': self.match_score,
                 'mismatch': self.mismatch_penalty,
                 'gap_open': self.gap_open_penalty,
@@ -761,37 +863,50 @@ class LinkerFilterV3:
             final_stats = {
                 'total_reads': 0,
                 'valid_pets': 0,
-                'failed_alignment_score': 0,
+                'failed_both_no_linker': 0,
                 'failed_tag_length': 0,
                 'failed_ambiguous_linker': 0,
                 'failed_read_id_mismatch': 0,
                 'reverse_complement_matches': 0,
                 'linker_composition': defaultdict(int),
-                'alignments': 0
+                'category_counts': defaultdict(int),
+                'same_linker_pets': 0,
+                'diff_linker_pets': 0,
+                'alignments': 0,
+                'linkers_are_rc_pairs': self.linkers_are_rc_pairs
             }
             
             for stats in all_stats:
                 final_stats['total_reads'] += stats['total_reads']
                 final_stats['valid_pets'] += stats['valid_pets']
-                final_stats['failed_alignment_score'] += stats['failed_alignment_score']
+                final_stats['failed_both_no_linker'] += stats['failed_both_no_linker']
                 final_stats['failed_tag_length'] += stats['failed_tag_length']
                 final_stats['failed_ambiguous_linker'] += stats['failed_ambiguous_linker']
                 final_stats['reverse_complement_matches'] += stats['reverse_complement_matches']
+                final_stats['same_linker_pets'] += stats['same_linker_pets']
+                final_stats['diff_linker_pets'] += stats['diff_linker_pets']
                 final_stats['alignments'] += stats['alignments']
                 for key, count in stats['linker_composition'].items():
                     final_stats['linker_composition'][key] += count
+                for key, count in stats['category_counts'].items():
+                    final_stats['category_counts'][key] += count
             
-            # Merge output files
+            # Merge output files — now includes X (single-read) categories
             n_linkers = len(self.linker_sequences)
-            for i in range(n_linkers):
-                for j in range(n_linkers):
-                    r1_output = os.path.join(output_dir, f"{output_prefix}.{i+1}_{j+1}.R1.fastq")
-                    r2_output = os.path.join(output_dir, f"{output_prefix}.{i+1}_{j+1}.R2.fastq")
+            all_labels = list(range(n_linkers)) + [_X]
+            for i in all_labels:
+                for j in all_labels:
+                    if i == _X and j == _X:
+                        continue
+                    i_str = str(i + 1) if isinstance(i, int) else i
+                    j_str = str(j + 1) if isinstance(j, int) else j
+                    r1_output = os.path.join(output_dir, f"{output_prefix}.{i_str}_{j_str}.R1.fastq")
+                    r2_output = os.path.join(output_dir, f"{output_prefix}.{i_str}_{j_str}.R2.fastq")
                     
                     with open(r1_output, 'w') as out_r1, open(r2_output, 'w') as out_r2:
                         for chunk_idx in range(len(chunk_files)):
-                            chunk_r1 = os.path.join(chunk_output_dir, f"chunk_{chunk_idx}.{i+1}_{j+1}.R1.fastq")
-                            chunk_r2 = os.path.join(chunk_output_dir, f"chunk_{chunk_idx}.{i+1}_{j+1}.R2.fastq")
+                            chunk_r1 = os.path.join(chunk_output_dir, f"chunk_{chunk_idx}.{i_str}_{j_str}.R1.fastq")
+                            chunk_r2 = os.path.join(chunk_output_dir, f"chunk_{chunk_idx}.{i_str}_{j_str}.R2.fastq")
                             
                             if os.path.exists(chunk_r1):
                                 with open(chunk_r1, 'r') as f:
@@ -835,21 +950,34 @@ class LinkerFilterV3:
     
     def _log_statistics(self, stats: Dict):
         """Log filtering statistics."""
+        total = max(1, stats['total_reads'])
+        valid = max(1, stats['valid_pets'])
+        
         logger.info("=" * 70)
-        logger.info("LINKER FILTERING COMPLETE (parasail v3)")
+        logger.info("LINKER FILTERING COMPLETE (parasail v3 — FIXED)")
         logger.info("=" * 70)
         logger.info(f"Total reads processed: {stats['total_reads']:,}")
         logger.info(f"Valid PETs: {stats['valid_pets']:,} "
-                   f"({100 * stats['valid_pets'] / max(1, stats['total_reads']):.2f}%)")
-        logger.info(f"Failed alignment score: {stats['failed_alignment_score']:,}")
-        logger.info(f"Failed tag length: {stats['failed_tag_length']:,}")
-        logger.info(f"Failed ambiguous linker: {stats['failed_ambiguous_linker']:,}")
-        logger.info(f"Reverse complement matches: {stats['reverse_complement_matches']:,}")
+                   f"({100 * stats['valid_pets'] / total:.2f}%)")
+        logger.info(f"Failed - no linker in either read: {stats['failed_both_no_linker']:,}")
+        logger.info(f"Failed - tag length: {stats['failed_tag_length']:,}")
+        logger.info(f"Failed - ambiguous linker: {stats['failed_ambiguous_linker']:,}")
         logger.info("")
-        logger.info("Linker Composition:")
-        for (i, j), count in sorted(stats['linker_composition'].items()):
-            pct = 100 * count / max(1, stats['valid_pets'])
-            logger.info(f"  Linker {i+1} x {j+1}: {count:,} PETs ({pct:.1f}%)")
+        
+        # Category breakdown (ChIA-PET Tool V3 style)
+        logger.info("Category Breakdown (ChIA-PET Tool V3 notation):")
+        for cat in ['AA', 'AB', 'BA', 'BB', 'AX', 'XA', 'BX', 'XB']:
+            count = stats.get('category_counts', {}).get(cat, 0)
+            pct = 100 * count / valid
+            same_or_diff = "same" if _is_same_linker(cat, stats.get('linkers_are_rc_pairs', False)) else "DIFF"
+            logger.info(f"  {cat}: {count:>10,} PETs ({pct:5.1f}%) [{same_or_diff}-linker]")
+        
+        logger.info("")
+        same = stats.get('same_linker_pets', 0)
+        diff = stats.get('diff_linker_pets', 0)
+        logger.info(f"SAME-linker PETs: {same:,} ({100 * same / total:.2f}% of total, {100 * same / valid:.1f}% of valid)")
+        logger.info(f"DIFF-linker PETs: {diff:,} ({100 * diff / total:.2f}% of total, {100 * diff / valid:.1f}% of valid)")
+        logger.info(f"Expected from publication: ~51.42% same-linker of total")
         logger.info("")
         logger.info(self.perf_stats.summary())
 
@@ -951,11 +1079,26 @@ Performance:
     )
     
     # Print final summary
+    total = max(1, stats['total_reads'])
+    valid = max(1, stats['valid_pets'])
+    same = stats.get('same_linker_pets', 0)
+    diff = stats.get('diff_linker_pets', 0)
+    
     print("\n" + "=" * 70)
     print("FINAL SUMMARY")
     print("=" * 70)
     print(f"Total reads: {stats['total_reads']:,}")
-    print(f"Valid PETs: {stats['valid_pets']:,} ({100*stats['valid_pets']/max(1,stats['total_reads']):.1f}%)")
+    print(f"Valid PETs: {stats['valid_pets']:,} ({100*stats['valid_pets']/total:.1f}%)")
+    print(f"SAME-linker PETs: {same:,} ({100*same/total:.2f}% of total)")
+    print(f"DIFF-linker PETs: {diff:,} ({100*diff/total:.2f}% of total)")
+    print(f"Expected same-linker: ~51.42% of total (from publication)")
+    print(f"")
+    print(f"Category breakdown:")
+    for cat in ['AB', 'BA', 'AX', 'XA', 'BX', 'XB', 'AA', 'BB']:
+        count = stats.get('category_counts', {}).get(cat, 0)
+        pct = 100 * count / valid
+        print(f"  {cat}: {count:>10,} ({pct:5.1f}%)")
+    print(f"")
     print(f"Total time: {stats['timing']['total_seconds']:.2f} seconds")
     print(f"Throughput: {stats['performance']['reads_per_second']:,.0f} reads/second")
     print(f"Alignments: {stats['performance']['alignments_per_second']:,.0f} alignments/second")
