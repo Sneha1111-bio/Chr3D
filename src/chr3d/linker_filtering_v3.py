@@ -685,27 +685,44 @@ class LinkerFilterV3:
         Returns:
             List of (chunk_r1, chunk_r2) file paths
         """
+        import subprocess
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # Count total reads
+        # Count total reads — use fast OS-level wc -l for plain files,
+        # fall back to zcat | wc -l for gzipped files (avoids slow Python line loop)
         logger.info("Counting reads for splitting...")
-        open_func = gzip.open if r1_file.endswith('.gz') else open
-        mode = 'rt' if r1_file.endswith('.gz') else 'r'
-        
-        total_reads = 0
-        with open_func(r1_file, mode) as f:
-            for line in f:
-                total_reads += 1
-        total_reads = total_reads // 4
+        try:
+            if r1_file.endswith('.gz'):
+                result = subprocess.run(
+                    f"zcat {r1_file} | wc -l",
+                    shell=True, capture_output=True, text=True, check=True
+                )
+            else:
+                result = subprocess.run(
+                    ["wc", "-l", r1_file],
+                    capture_output=True, text=True, check=True
+                )
+            total_lines = int(result.stdout.strip().split()[0])
+            total_reads = total_lines // 4
+        except Exception as e:
+            logger.warning(f"Fast read counting failed ({e}), falling back to Python counter...")
+            open_func = gzip.open if r1_file.endswith('.gz') else open
+            mode = 'rt' if r1_file.endswith('.gz') else 'r'
+            total_reads = 0
+            with open_func(r1_file, mode) as f:
+                for line in f:
+                    total_reads += 1
+            total_reads = total_reads // 4
         
         reads_per_chunk = (total_reads // n_chunks) + 1
         
         logger.info(f"Splitting {total_reads:,} reads into {n_chunks} chunks (~{reads_per_chunk:,} reads each)")
         
-        # Split files
-        f1 = gzip.open(r1_file, 'rt') if r1_file.endswith('.gz') else open(r1_file)
-        f2 = gzip.open(r2_file, 'rt') if r2_file.endswith('.gz') else open(r2_file)
+        # Split files — use large 64MB write buffers to minimise I/O overhead
+        BUF = 64 * 1024 * 1024  # 64 MB
+        f1 = gzip.open(r1_file, 'rt') if r1_file.endswith('.gz') else open(r1_file, 'r', buffering=BUF)
+        f2 = gzip.open(r2_file, 'rt') if r2_file.endswith('.gz') else open(r2_file, 'r', buffering=BUF)
         
         chunk_files = []
         chunk_idx = 0
@@ -714,8 +731,8 @@ class LinkerFilterV3:
         # Open first chunk
         chunk_r1 = output_path / f"chunk_{chunk_idx:03d}_R1.fastq"
         chunk_r2 = output_path / f"chunk_{chunk_idx:03d}_R2.fastq"
-        out_r1 = open(chunk_r1, 'w')
-        out_r2 = open(chunk_r2, 'w')
+        out_r1 = open(chunk_r1, 'w', buffering=BUF)
+        out_r2 = open(chunk_r2, 'w', buffering=BUF)
         chunk_files.append((str(chunk_r1), str(chunk_r2)))
         
         try:
@@ -738,8 +755,8 @@ class LinkerFilterV3:
                     
                     chunk_r1 = output_path / f"chunk_{chunk_idx:03d}_R1.fastq"
                     chunk_r2 = output_path / f"chunk_{chunk_idx:03d}_R2.fastq"
-                    out_r1 = open(chunk_r1, 'w')
-                    out_r2 = open(chunk_r2, 'w')
+                    out_r1 = open(chunk_r1, 'w', buffering=BUF)
+                    out_r2 = open(chunk_r2, 'w', buffering=BUF)
                     chunk_files.append((str(chunk_r1), str(chunk_r2)))
         finally:
             out_r1.close()

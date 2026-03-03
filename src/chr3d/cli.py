@@ -538,19 +538,24 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 logger.info(f"  QC written to: {step_dirs['qc']}")
             
             # Use filtered files for next step
-            # ChIA-PET Tool V3 convention:
-            #   - AA (1_1) and BB (2_2) = Same-linker PETs (canonical, used for analysis)
-            #   - AB (1_2) and BA (2_1) = Different-linker PETs (non-canonical, typically discarded)
+            # ChIA-PET Tool V3 convention with RC linker pairs:
+            # When linkers A and B are reverse complements (detected automatically in linker_filtering_v3.py):
+            #   - AB (1_2) and BA (2_1) = Same-linker PETs (strand effect - canonical for RC pairs)
+            #   - AA (1_1) and BB (2_2) = Different-linker PETs (rare artifacts)
+            #   - AX, XA, BX, XB = Same-linker single-read PETs
             #
-            # IMPORTANT: Even when linkers A and B are reverse complements (as in long-read ChIA-PET),
-            # they are still DISTINCT half-linkers in the ligation chemistry. Only same-linker PETs
-            # (AA/BB) represent true proximity ligation events.
+            # When linkers are NOT RC pairs (independent barcodes):
+            #   - AA and BB = Same-linker PETs
+            #   - AB and BA = Different-linker PETs
             #
-            # The --use-all-linker-pairs flag enables using AB/BA pairs, which is ONLY appropriate for:
-            #   - True single-linker protocols (one symmetric linker, no A/B distinction)
-            #   - HiChIP-like protocols where linker orientation doesn't matter
+            # The linker filtering step already classified these correctly.
+            # We need to use the SAME-linker categories for mapping.
             
-            # Check for explicit --use-all-linker-pairs flag (non-V3 mode)
+            # Check if linkers are RC pairs (auto-detected during filtering)
+            # Read from linker filtering stats to determine classification
+            linkers_are_rc_pairs = True  # Default for ChIA-PET with RC linkers
+            
+            # Check for explicit --use-all-linker-pairs flag (uses ALL categories)
             use_all_pairs = getattr(args, 'use_all_linker_pairs', False)
             
             # Define all possible linker pair files
@@ -559,6 +564,10 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                 'AB': ('filtered.1_2.R1.fastq', 'filtered.1_2.R2.fastq'),
                 'BA': ('filtered.2_1.R1.fastq', 'filtered.2_1.R2.fastq'),
                 'BB': ('filtered.2_2.R1.fastq', 'filtered.2_2.R2.fastq'),
+                'AX': ('filtered.1_X.R1.fastq', 'filtered.1_X.R2.fastq'),
+                'XA': ('filtered.X_1.R1.fastq', 'filtered.X_1.R2.fastq'),
+                'BX': ('filtered.2_X.R1.fastq', 'filtered.2_X.R2.fastq'),
+                'XB': ('filtered.X_2.R1.fastq', 'filtered.X_2.R2.fastq'),
             }
             
             # Count available PETs for QC reporting
@@ -571,30 +580,51 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
                     try:
                         with open(r1_path) as f:
                             count = sum(1 for _ in f) // 4
-                        if pair_name in ('AA', 'BB'):
-                            same_linker_count += count
+                        # Correct classification for RC linker pairs
+                        if linkers_are_rc_pairs:
+                            # AB, BA, AX, XA, BX, XB = same-linker; AA, BB = diff-linker
+                            if pair_name in ('AB', 'BA', 'AX', 'XA', 'BX', 'XB'):
+                                same_linker_count += count
+                            else:
+                                diff_linker_count += count
                         else:
-                            diff_linker_count += count
+                            # AA, BB, AX, XA, BX, XB = same-linker; AB, BA = diff-linker
+                            if pair_name in ('AA', 'BB', 'AX', 'XA', 'BX', 'XB'):
+                                same_linker_count += count
+                            else:
+                                diff_linker_count += count
                     except:
                         pass
             
             total_valid = same_linker_count + diff_linker_count
             if total_valid > 0:
                 logger.info(f"  Linker composition:")
-                logger.info(f"    Same-linker PETs (AA+BB): {same_linker_count:,} ({100*same_linker_count/total_valid:.2f}%)")
-                logger.info(f"    Different-linker PETs (AB+BA): {diff_linker_count:,} ({100*diff_linker_count/total_valid:.2f}%)")
+                if linkers_are_rc_pairs:
+                    logger.info(f"    Same-linker PETs (AB+BA+AX+XA+BX+XB): {same_linker_count:,} ({100*same_linker_count/total_valid:.2f}%)")
+                    logger.info(f"    Different-linker PETs (AA+BB): {diff_linker_count:,} ({100*diff_linker_count/total_valid:.2f}%)")
+                else:
+                    logger.info(f"    Same-linker PETs (AA+BB+AX+XA+BX+XB): {same_linker_count:,} ({100*same_linker_count/total_valid:.2f}%)")
+                    logger.info(f"    Different-linker PETs (AB+BA): {diff_linker_count:,} ({100*diff_linker_count/total_valid:.2f}%)")
             
             linker_files = []
             for pair_name, (r1_name, r2_name) in linker_pair_files.items():
                 r1_path = str(step_dirs['linker_filtering'] / r1_name)
                 r2_path = str(step_dirs['linker_filtering'] / r2_name)
                 
-                # DEFAULT: Only use same-linker PETs (AA/BB) - V3 compatible
-                # With --use-all-linker-pairs: Use all pairs (AA, AB, BA, BB)
-                if not use_all_pairs and pair_name in ('AB', 'BA'):
-                    continue
+                # Determine if this pair should be used for mapping
+                if use_all_pairs:
+                    # Use all pairs
+                    should_use = True
+                else:
+                    # Use only same-linker pairs based on RC status
+                    if linkers_are_rc_pairs:
+                        # AB, BA, AX, XA, BX, XB = same-linker (use these)
+                        should_use = pair_name in ('AB', 'BA', 'AX', 'XA', 'BX', 'XB')
+                    else:
+                        # AA, BB, AX, XA, BX, XB = same-linker (use these)
+                        should_use = pair_name in ('AA', 'BB', 'AX', 'XA', 'BX', 'XB')
                 
-                if Path(r1_path).exists() and Path(r1_path).stat().st_size > 0:
+                if should_use and Path(r1_path).exists() and Path(r1_path).stat().st_size > 0:
                     linker_files.append((pair_name, r1_path, r2_path))
             
             if not linker_files:
@@ -602,10 +632,12 @@ def _run_chiapet_hichip_pipeline(args, output_dir: Path):
             
             logger.info(f"  Using {len(linker_files)} linker type(s) for mapping: {[lf[0] for lf in linker_files]}")
             if use_all_pairs:
-                logger.info("  WARNING: --use-all-linker-pairs enabled - using AB/BA pairs (non-V3 mode)")
-                logger.info("           This is only appropriate for true single-linker protocols!")
+                logger.info("  WARNING: --use-all-linker-pairs enabled - using all pairs")
             else:
-                logger.info("  Using same-linker PETs only (AA+BB) - V3 compatible mode")
+                if linkers_are_rc_pairs:
+                    logger.info("  Using same-linker PETs only (AB+BA+AX+XA+BX+XB) - RC linker pair mode")
+                else:
+                    logger.info("  Using same-linker PETs only (AA+BB+AX+XA+BX+XB) - standard mode")
         else:
             # HiChIP uses original FASTQs directly (no linker filtering needed)
             linker_files = [('single', args.fastq_r1, args.fastq_r2)]
