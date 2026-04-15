@@ -6,6 +6,8 @@ Usage:
     chr3d bulk-hic   Run the bulk Hi-C pipeline (single sample)
     chr3d sn-hic     Run the single-nucleus Hi-C pipeline (multiple cells)
     chr3d chia-pet   Run the ChIA-PET pipeline (linker filter → map → peaks → loops)
+    chr3d hichip     Run the HiChIP pipeline (align → dedup → MboI purify → background)
+    chr3d digest     Generate restriction fragment BED from genome FASTA
 
 Examples:
     # Bulk Hi-C
@@ -31,6 +33,15 @@ Examples:
         --genome /path/to/hg38.fa \\
         --linkers ACGCGATATCGCG \\
         --output-dir ./results/chiapet \\
+        --sample-id my_sample
+
+    # HiChIP
+    chr3d hichip \\
+        --r1 sample_R1.fastq.gz \\
+        --r2 sample_R2.fastq.gz \\
+        --genome /path/to/hg38.fa \\
+        --fragments /path/to/hg38_MboI_fragments.bed \\
+        --output-dir ./results/hichip \\
         --sample-id my_sample
 """
 
@@ -322,6 +333,37 @@ def _fmt_time(seconds: float) -> str:
         h = int(seconds // 3600)
         m = int((seconds % 3600) // 60)
         return f"{h}h {m}m"
+
+
+# =============================================================================
+# HiChIP command
+# =============================================================================
+
+def cmd_hichip(args):
+    """Run the complete HiChIP pipeline."""
+    from .peak_based.hichip_pipline import HiChIPPipeline
+
+    pipeline = HiChIPPipeline(
+        genome_index=args.genome,
+        fragment_bed=args.fragments,
+        threads=args.threads,
+        n_chunks=args.n_chunks,
+        min_insert_size=args.min_insert,
+        keep_intermediates=args.keep_intermediates,
+    )
+    try:
+        stats = pipeline.run(
+            fastq_r1=args.r1,
+            fastq_r2=args.r2,
+            output_dir=args.output_dir,
+            sample_id=args.sample_id,
+        )
+        return 0
+    except Exception as e:
+        logger.error(f"HiChIP pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 # =============================================================================
@@ -671,6 +713,50 @@ Output layout:
                      help='Write log to FILE in addition to stdout')
 
     chia.set_defaults(func=cmd_chia_pet)
+
+    # ------------------------------------------------------------------
+    # hichip
+    # ------------------------------------------------------------------
+    hichip = subparsers.add_parser(
+        'hichip',
+        help='HiChIP pipeline  (align → dedup → MboI purify → background model)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+HiChIP Pipeline
+===============
+Full HiChIP analysis pipeline:
+  1. FASTQ splitting into parallel chunks
+  2. BWA MEM -5SP -T0 alignment (per chunk, merged)
+  3. BAM → BEDPE + 5' coordinate deduplication
+  4. MboI restriction fragment purification
+  5. Background model (randomised PETs, distance decay)
+""",
+    )
+    hichip.add_argument('--r1', required=True, metavar='FASTQ',
+                        help='R1 FASTQ file (gzipped or plain)')
+    hichip.add_argument('--r2', required=True, metavar='FASTQ',
+                        help='R2 FASTQ file (gzipped or plain)')
+    hichip.add_argument('--genome', required=True, metavar='FASTA',
+                        help='BWA-indexed genome FASTA')
+    hichip.add_argument('--fragments', required=True, metavar='BED',
+                        help='Restriction fragment BED (e.g. MboI from chr3d digest)')
+    hichip.add_argument('--output-dir', required=True, metavar='DIR',
+                        help='Output directory (created if absent)')
+    hichip.add_argument('--sample-id', default='sample', metavar='STR',
+                        help='Sample identifier for output file names (default: sample)')
+    hichip.add_argument('--threads', type=int, default=24, metavar='INT',
+                        help='Total CPU threads (default: 24)')
+    hichip.add_argument('--n-chunks', type=int, default=6, metavar='INT',
+                        help='Parallel BWA jobs — threads split evenly (default: 6)')
+    hichip.add_argument('--min-insert', type=int, default=100, metavar='INT',
+                        help='Min insert size for MboI purification bp (default: 100)')
+    hichip.add_argument('--keep-intermediates', action='store_true',
+                        help='Keep per-chunk FASTQ/BAM files after merge')
+    hichip.add_argument('-v', '--verbose', action='store_true',
+                        help='Enable DEBUG-level logging')
+    hichip.add_argument('--log-file', metavar='FILE',
+                        help='Write log to FILE in addition to stdout')
+    hichip.set_defaults(func=cmd_hichip)
 
     # ------------------------------------------------------------------
     # digest

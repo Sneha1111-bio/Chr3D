@@ -1,0 +1,5 @@
+conda_forge_output_validation: true
+conda_forge_output_validation_timeout: 600
+github:
+  user_or_org: chens-lab
+  repo_name: Chr3D
