@@ -2,1281 +2,776 @@
 """
 Chr3D Command Line Interface
 
-Provides command-line access to all pipeline steps for ChIA-PET and HiChIP analysis.
-
 Usage:
-    chr3d <command> [options]
+    chr3d bulk-hic   Run the bulk Hi-C pipeline (single sample)
+    chr3d sn-hic     Run the single-nucleus Hi-C pipeline (multiple cells)
+    chr3d chia-pet   Run the ChIA-PET pipeline (linker filter → map → peaks → loops)
 
-Commands:
-    run             Run the complete pipeline
-    filter-linker   Step 1: Filter linker sequences
-    map             Step 2: Map reads to genome
-    purify          Step 3: Purify PETs (deduplicate/merge)
-    categorize      Step 4: Categorize PETs (iPET/sPET/oPET)
-    call-peaks      Step 5: Call peaks from sPET
-    call-loops      Step 6: Call significant loops
-    generate-sites  Generate restriction site file
+Examples:
+    # Bulk Hi-C
+    chr3d bulk-hic \\
+        --r1 sample_R1.fastq.gz \\
+        --r2 sample_R2.fastq.gz \\
+        --genome /path/to/hg38.fa \\
+        --chrom-sizes /path/to/hg38.chrom.sizes \\
+        --output-dir ./results/my_sample \\
+        --sample-id my_sample
+
+    # sn-Hi-C (manifest file with one cell per line: cell_id<TAB>R1.fastq.gz<TAB>R2.fastq.gz)
+    chr3d sn-hic \\
+        --manifest cells.tsv \\
+        --genome /path/to/hg38.fa \\
+        --chrom-sizes /path/to/hg38.chrom.sizes \\
+        --output-dir ./results/sn_hic
+
+    # ChIA-PET
+    chr3d chia-pet \\
+        --r1 sample_R1.fastq.gz \\
+        --r2 sample_R2.fastq.gz \\
+        --genome /path/to/hg38.fa \\
+        --linkers ACGCGATATCGCG \\
+        --output-dir ./results/chiapet \\
+        --sample-id my_sample
 """
 
 import argparse
-import logging
 import sys
 import os
 from pathlib import Path
 from datetime import datetime
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger('chr3d')
+from .utils.logging import setup_logging, get_logger
+
+logger = get_logger('chr3d')
 
 
-def setup_logging(verbose: bool = False, log_file: str = None):
-    """Configure logging based on verbosity and optional log file."""
-    level = logging.DEBUG if verbose else logging.INFO
-    
-    handlers = [logging.StreamHandler(sys.stdout)]
-    if log_file:
-        handlers.append(logging.FileHandler(log_file))
-    
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=handlers,
-        force=True
-    )
+# =============================================================================
+# Bulk Hi-C command
+# =============================================================================
 
+def cmd_bulk_hic(args):
+    """Run the complete bulk Hi-C pipeline for a single sample."""
+    from .hic.bulk_hic import HiCPipeline
 
-def cmd_filter_linker(args):
-    """Step 1: Filter linker sequences from FASTQ files."""
-    from .linker_filtering_v3 import LinkerFilterV3
-    
-    logger.info("=" * 70)
-    logger.info("STEP 1: LINKER FILTERING")
-    logger.info("=" * 70)
-    
-    # Parse linker sequences
-    linkers = [args.linker_a]
-    if args.linker_b:
-        linkers.append(args.linker_b)
-    
-    logger.info(f"Input R1: {args.fastq_r1}")
-    logger.info(f"Input R2: {args.fastq_r2}")
-    logger.info(f"Linkers: {linkers}")
-    logger.info(f"Output prefix: {args.output_prefix}")
-    
-    # Create output directory
-    output_dir = Path(args.output_dir) if args.output_dir else Path(args.fastq_r1).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize filter
-    linker_filter = LinkerFilterV3(
-        linker_sequences=linkers,
-        min_alignment_score=args.min_score,
-        min_tag_length=args.min_tag_length,
-        max_tag_length=args.max_tag_length,
-        n_threads=args.threads
-    )
-    
-    # Run filtering
-    stats = linker_filter.filter_fastq(
-        fastq_r1=args.fastq_r1,
-        fastq_r2=args.fastq_r2,
-        output_prefix=args.output_prefix,
-        output_dir=str(output_dir),
-        compress_output=args.compress
-    )
-    
-    logger.info(f"Linker filtering complete: {stats['valid_pets']:,} valid PETs")
-    return 0
-
-
-def cmd_map(args):
-    """Step 2: Map reads to reference genome."""
-    from .mapping_v2 import PETMapper
-    
-    logger.info("=" * 70)
-    logger.info("STEP 2: GENOMIC MAPPING")
-    logger.info("=" * 70)
-    
-    logger.info(f"Input R1: {args.fastq_r1}")
-    logger.info(f"Input R2: {args.fastq_r2}")
-    logger.info(f"Genome index: {args.genome_index}")
-    logger.info(f"Output prefix: {args.output_prefix}")
-    logger.info(f"BWA mode: {'MEM' if args.use_bwa_mem else 'ALN'}")
-    
-    # Create output directory
-    output_dir = Path(args.output_dir) if args.output_dir else Path(args.fastq_r1).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize mapper
-    mapper = PETMapper(
-        genome_index=args.genome_index,
-        mapping_quality_cutoff=args.mapping_quality,
-        n_threads=args.threads,
-        use_bwa_mem=args.use_bwa_mem,
-        use_single_end=getattr(args, 'use_single_end', False),
-        self_ligation_cutoff=args.self_ligation_cutoff
-    )
-    
-    # Run mapping
-    stats = mapper.map_linker_filtered_fastq(
-        fastq_r1=args.fastq_r1,
-        fastq_r2=args.fastq_r2,
-        output_prefix=args.output_prefix,
-        output_dir=str(output_dir),
-        keep_sam=args.keep_sam,
-        remove_duplicates=not args.no_dedup
-    )
-    
-    logger.info(f"Mapping complete: {stats.get('valid_pairs', 0):,} valid pairs")
-    return 0
-
-
-def cmd_purify(args):
-    """Step 3: Purify PETs (deduplicate and merge)."""
-    logger.info("=" * 70)
-    logger.info("STEP 3: PET PURIFYING")
-    logger.info("=" * 70)
-    
-    logger.info(f"Input BEDPE: {args.bedpe}")
-    logger.info(f"Output prefix: {args.output_prefix}")
-    logger.info(f"Mode: {args.mode}")
-    
-    # Create output directory
-    output_dir = Path(args.output_prefix).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    if args.mode == 'chiapet':
-        from .chiapet_purifying import ChIAPETPurifier
-        
-        purifier = ChIAPETPurifier(merge_distance=args.merge_distance)
-        stats = purifier.purify(args.bedpe, args.output_prefix)
-        
-    else:  # hichip
-        from .hichip_purifying import HiChIPPurifier
-        
-        if not args.restriction_sites:
-            logger.error("HiChIP mode requires --restriction-sites")
-            return 1
-        
-        purifier = HiChIPPurifier(
-            restriction_file=args.restriction_sites,
-            min_insert_size=args.min_insert_size
-        )
-        
-        output_file = f"{args.output_prefix}.valid.bedpe"
-        sameres_file = f"{args.output_prefix}.sameres.bedpe"
-        stats = purifier.remove_same_fragment_pets(args.bedpe, output_file, sameres_file)
-    
-    logger.info("Purifying complete")
-    return 0
-
-
-def cmd_categorize(args):
-    """Step 4: Categorize PETs into iPET, sPET, oPET."""
-    from .pet_categorization import PETCategorizer
-    
-    logger.info("=" * 70)
-    logger.info("STEP 4: PET CATEGORIZATION")
-    logger.info("=" * 70)
-    
-    logger.info(f"Input BEDPE: {args.bedpe}")
-    logger.info(f"Output prefix: {args.output_prefix}")
-    logger.info(f"Self-ligation cutoff: {args.cutoff}bp")
-    logger.info(f"Mode: {args.mode}")
-    
-    # Create output directory
-    output_dir = Path(args.output_prefix).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize categorizer
-    categorizer = PETCategorizer(
-        self_ligation_cutoff=args.cutoff,
-        mode=args.mode
-    )
-    
-    # Run categorization
-    stats = categorizer.categorize_bedpe(args.bedpe, args.output_prefix)
-    
-    logger.info(f"Categorization complete:")
-    logger.info(f"  iPET: {stats['ipet']['count']:,} ({stats['ipet']['percentage']:.1f}%)")
-    logger.info(f"  sPET: {stats['spet']['count']:,} ({stats['spet']['percentage']:.1f}%)")
-    logger.info(f"  oPET: {stats['opet']['count']:,} ({stats['opet']['percentage']:.1f}%)")
-    return 0
-
-
-def cmd_call_peaks(args):
-    """Step 5: Call peaks from sPET data."""
-    from .peak_calling import PeakCaller
-    
-    logger.info("=" * 70)
-    logger.info("STEP 5: PEAK CALLING")
-    logger.info("=" * 70)
-    
-    logger.info(f"Input: {args.input}")
-    logger.info(f"Output prefix: {args.output_prefix}")
-    logger.info(f"Genome size: {args.genome_size}")
-    logger.info(f"Q-value cutoff: {args.qvalue}")
-    
-    # Create output directory
-    output_dir = Path(args.output_prefix).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize peak caller
-    peak_caller = PeakCaller(
-        genome_size=args.genome_size,
-        qvalue_cutoff=args.qvalue,
-        keep_dup=args.keep_dup,
-        build_model=not args.no_model,
-        conda_env=args.conda_env if not args.no_conda else None
-    )
-    
-    # Run peak calling
-    stats = peak_caller.call_peaks(args.input, args.output_prefix, input_format=args.format)
-    
-    logger.info(f"Peak calling complete: {stats.get('num_peaks', 0):,} peaks")
-    return 0
-
-
-def cmd_call_loops(args):
-    """Step 6: Call significant chromatin loops."""
-    from .loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
-    
-    logger.info("=" * 70)
-    logger.info("STEP 6: LOOP CALLING")
-    logger.info("=" * 70)
-    
-    logger.info(f"iPET file: {args.ipet_file}")
-    logger.info(f"Output prefix: {args.output_prefix}")
-    logger.info(f"Extension length: {args.extension}bp")
-    logger.info(f"iPET threshold: {args.ipet_threshold}")
-    logger.info(f"FDR cutoff: {args.fdr_cutoff}")
-    
-    # Create output directory
-    output_dir = Path(args.output_prefix).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Step 6.1: Pre-clustering
-    logger.info("\n--- Step 6.1: Pre-clustering ---")
-    pre_clusterer = PreClusterer(extension_length=args.extension)
-    precluster_stats = pre_clusterer.pre_cluster(
-        args.ipet_file,
-        f"{args.output_prefix}.preclustered"
-    )
-    
-    # Step 6.2: Anchor clustering
-    logger.info("\n--- Step 6.2: Anchor clustering ---")
-    anchor_clusterer = AnchorClusterer()
-    cluster_stats = anchor_clusterer.cluster_anchors(
-        precluster_stats['output_file'],
-        f"{args.output_prefix}.clusters.txt"
-    )
-    
-    # Step 6.3: Statistical significance
-    logger.info("\n--- Step 6.3: Statistical significance ---")
-    stat_sig = StatisticalSignificance(
-        ipet_count_threshold=args.ipet_threshold,
-        pvalue_cutoff=args.fdr_cutoff,
-        extension_length=args.extension
-    )
-    sig_stats = stat_sig.calculate_significance(
-        f"{args.output_prefix}.clusters.txt",
-        args.ipet_file,
-        f"{args.output_prefix}.loops"
-    )
-    
-    logger.info(f"\nLoop calling complete:")
-    logger.info(f"  Pre-clusters: {precluster_stats['num_clusters']:,}")
-    logger.info(f"  Anchor clusters: {cluster_stats['num_anchor_clusters']:,}")
-    logger.info(f"  Significant loops: {sig_stats['num_significant_loops']:,}")
-    logger.info(f"  FDR < 0.05: {sig_stats['num_fdr_005']:,}")
-    logger.info(f"  FDR < 0.01: {sig_stats['num_fdr_001']:,}")
-    return 0
-
-
-def cmd_generate_sites(args):
-    """Generate restriction site file from genome FASTA."""
-    from .restriction_sites import RestrictionSiteGenerator
-    
-    logger.info("=" * 70)
-    logger.info("RESTRICTION SITE GENERATION")
-    logger.info("=" * 70)
-    
-    logger.info(f"Genome: {args.genome}")
-    logger.info(f"Enzyme: {args.enzyme}")
-    logger.info(f"Output: {args.output}")
-    
-    # Create output directory
-    output_dir = Path(args.output).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize generator
-    generator = RestrictionSiteGenerator(
-        enzyme=args.enzyme,
-        min_frag_size=args.min_size,
-        max_frag_size=args.max_size
-    )
-    
-    # Generate sites
-    stats = generator.generate_sites(args.genome, args.output)
-    
-    logger.info(f"Generated {stats['total_fragments']:,} restriction sites")
-    return 0
-
-
-def cmd_run(args):
-    """Run the complete pipeline."""
-    logger.info("=" * 70)
-    logger.info("CHR3D COMPLETE PIPELINE")
-    logger.info("=" * 70)
-    logger.info(f"Mode: {args.mode.upper()}")
-    logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"Keep intermediates: {args.keep_intermediates}")
-    
-    # Validate mode-specific requirements
-    if args.mode == 'chiapet' and not args.linker_a:
-        logger.error("--linker-a is required for chiapet mode")
-        return 1
-    if args.mode == 'hichip' and not args.restriction_sites:
-        logger.error("--restriction-sites is required for hichip mode")
-        return 1
-    if args.mode == 'hic' and not args.chrom_sizes:
-        logger.error("--chrom-sizes is required for hic mode")
-        return 1
-    
-    # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Route to appropriate pipeline
-    if args.mode == 'hic':
-        return _run_hic_pipeline(args, output_dir)
-    else:
-        return _run_chiapet_hichip_pipeline(args, output_dir)
 
-
-def _run_hic_pipeline(args, output_dir: Path):
-    """Run Hi-C analysis pipeline."""
-    from .bulk_hic import HiCPipeline
-    
-    logger.info("\n" + "=" * 70)
-    logger.info("HI-C PIPELINE")
     logger.info("=" * 70)
-    
+    logger.info("CHR3D  —  BULK Hi-C PIPELINE")
+    logger.info("=" * 70)
+    logger.info(f"  Sample ID    : {args.sample_id}")
+    logger.info(f"  R1           : {args.r1}")
+    logger.info(f"  R2           : {args.r2}")
+    logger.info(f"  Genome       : {args.genome}")
+    logger.info(f"  Chrom sizes  : {args.chrom_sizes}")
+    logger.info(f"  Output dir   : {output_dir}")
+    logger.info(f"  Threads      : {args.threads}")
+    logger.info(f"  Assembly     : {args.assembly}")
+    logger.info(f"  Min MAPQ     : {args.min_mapq}")
+    logger.info(f"  Min distance : {args.min_distance} bp")
+    logger.info(f"  Resolutions  : {args.resolutions}")
+    logger.info(f"  Splits       : {args.splits}")
+    logger.info(f"  Call TADs    : {not args.no_tads}")
+    logger.info(f"  Call loops   : {not args.no_loops}")
+    logger.info(f"  Loop FDR     : {args.loop_fdr}")
+    logger.info(f"  Call comps   : {not args.no_compartments}")
+    logger.info(f"  Phasing track: {args.compartment_phasing_track or 'None'}") 
+    logger.info(f"  Keep files   : {args.keep_intermediates}")
+    logger.info(f"  RE enzyme    : {getattr(args, 'restriction_enzyme', None) or 'none (DNase/Micro-C)'}")
+    logger.info(f"  Fragment BED : {getattr(args, 'fragment_bed', None) or 'auto-generate'}")
+    logger.info("=" * 70)
+
     try:
-        # Parse resolutions
-        resolutions = [int(r) for r in args.resolution.split(',')]
-        
-        # Initialize Hi-C pipeline
-        hic_pipeline = HiCPipeline(
-            genome_index=args.genome_index,
+        resolutions = [int(r) for r in args.resolutions.split(',')]
+        tad_windows = (
+            [int(w) for w in args.tad_windows.split(',')]
+            if args.tad_windows else None
+        )
+
+        # Handle restriction enzyme / fragment BED
+        fragment_bed = getattr(args, 'fragment_bed', None)
+        restriction_enzyme = getattr(args, 'restriction_enzyme', None)
+        if restriction_enzyme and restriction_enzyme.lower() != 'none' and not fragment_bed:
+            from .utils.restriction_sites import RestrictionSiteGenerator
+            enzyme_tag = restriction_enzyme.replace('^', '').replace('/', '_')
+            frag_out = output_dir / f'fragments_{enzyme_tag}.bed'
+            if frag_out.exists():
+                logger.info(f"Fragment BED already exists, reusing: {frag_out}")
+            else:
+                logger.info(f"Generating restriction fragments for {restriction_enzyme} ...")
+                gen = RestrictionSiteGenerator(restriction_enzyme)
+                gen.generate_sites(args.genome, str(frag_out))
+            fragment_bed = str(frag_out)
+
+        pipeline = HiCPipeline(
+            genome_index=args.genome,
             chrom_sizes=args.chrom_sizes,
             threads=args.threads,
             assembly=args.assembly,
-            min_mapq=args.mapping_quality,
+            min_mapq=args.min_mapq,
             min_distance=args.min_distance,
-            resolutions=resolutions
+            resolutions=resolutions,
+            n_splits=args.splits,
+            call_tads=not args.no_tads,
+            tad_windows=tad_windows,
+            call_loops=not args.no_loops,
+            loop_fdr=args.loop_fdr,
+            call_compartments=not args.no_compartments,
+            compartment_phasing_track=args.compartment_phasing_track,
+            fragment_bed=fragment_bed,
         )
-        
-        # Note: HiCPipeline uses 'cleanup' parameter (opposite of keep_intermediates)
-        stats = hic_pipeline.run(
-            fastq1=args.fastq_r1,
-            fastq2=args.fastq_r2,
+
+        stats = pipeline.run(
+            fastq1=args.r1,
+            fastq2=args.r2,
             output_dir=output_dir,
             sample_id=args.sample_id,
-            cleanup=not args.keep_intermediates
+            cleanup=not args.keep_intermediates,
         )
-        
-        # Get final outputs from stats
-        final_outputs = stats.get('final_outputs', {})
-        
-        logger.info("\n" + "=" * 70)
-        logger.info("HI-C PIPELINE COMPLETE!")
-        logger.info("=" * 70)
-        logger.info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"\nFinal outputs (always kept):")
-        logger.info(f"  Sorted BAM: {final_outputs.get('sorted_bam', 'N/A')}")
-        logger.info(f"  Sorted pairs: {final_outputs.get('sorted_pairs', 'N/A')}")
-        logger.info(f"  Filtered pairs: {final_outputs.get('filtered_pairs', 'N/A')}")
-        logger.info(f"  Contact matrix (.cool): {final_outputs.get('cool_matrix', 'N/A')}")
-        logger.info(f"  Multi-res matrix (.mcool): {final_outputs.get('mcool_matrix', 'N/A')}")
-        
-        # SAM is always deleted (BAM is kept and can convert back to SAM)
-        deleted = stats.get('deleted_files', [])
-        if deleted:
-            logger.info(f"\nDeleted {len(deleted)} file(s) (SAM always removed, BAM kept)")
-        
-        if args.keep_intermediates:
-            logger.info(f"\nIntermediate files kept (--keep-intermediates):")
-            logger.info(f"  Dedup pairs: {output_dir}/pairs/{args.sample_id}.dedup.pairs.gz")
-            logger.info(f"\nNote: SAM deleted but BAM kept. Convert back: samtools view -h sorted.bam > output.sam")
-        
-        logger.info("=" * 70)
-        
+
+        _print_bulk_hic_summary(stats, output_dir, args.sample_id)
         return 0
-        
+
     except Exception as e:
-        logger.error(f"Hi-C pipeline failed: {e}")
+        logger.error(f"Bulk Hi-C pipeline failed: {e}")
         import traceback
         traceback.print_exc()
         return 1
 
 
-def _write_step_qc(qc_dir: Path, step_name: str, step_num: str, stats: dict, sample_id: str):
-    """Write QC stats for a single step."""
-    qc_file = qc_dir / f'{sample_id}_{step_num}_{step_name}_qc.txt'
-    with open(qc_file, 'w') as f:
-        f.write(f"{'=' * 50}\n")
-        f.write(f"Step {step_num}: {step_name.upper()} QC\n")
-        f.write(f"{'=' * 50}\n")
-        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        for key, value in stats.items():
-            if isinstance(value, dict):
-                f.write(f"{key}:\n")
-                for k, v in value.items():
-                    f.write(f"  {k}: {v}\n")
-            else:
-                f.write(f"{key}: {value}\n")
-        f.write(f"{'=' * 50}\n")
-    return qc_file
+def _print_bulk_hic_summary(stats: dict, output_dir: Path, sample_id: str):
+    """Print a clean summary after bulk Hi-C completes."""
+    outputs  = stats.get('final_outputs', {})
+    timing   = stats.get('timing', {})
+    tad_s    = stats.get('tad_calling', {})
+    loop_s   = stats.get('loop_calling', {})
 
-
-def _check_step_complete(step_dir: Path, expected_files: list) -> bool:
-    """Check if a step is complete by verifying expected output files exist and are non-empty."""
-    for f in expected_files:
-        filepath = step_dir / f if not str(f).startswith('/') else Path(f)
-        if not filepath.exists() or filepath.stat().st_size == 0:
-            return False
-    return True
-
-
-def _run_chiapet_hichip_pipeline(args, output_dir: Path):
-    """Run ChIA-PET or HiChIP analysis pipeline."""
     logger.info("\n" + "=" * 70)
-    logger.info(f"{args.mode.upper()} PIPELINE")
+    logger.info("BULK Hi-C COMPLETE")
     logger.info("=" * 70)
-    
-    resume_mode = getattr(args, 'resume', False)
-    if resume_mode:
-        logger.info("RESUME MODE: Will skip steps with existing outputs")
-    
-    # Set up step-specific output directories with proper numbering
-    # HiChIP: step01=mapping (no linker filtering)
-    # ChIA-PET: step01=linker_filtering, step02=mapping, etc.
-    if args.mode == 'hichip':
-        step_dirs = {
-            'mapping': output_dir / 'step01_mapping',
-            'purifying': output_dir / 'step02_purifying',
-            'categorization': output_dir / 'step03_categorization',
-            'peaks': output_dir / 'step04_peaks',
-            'loops': output_dir / 'step05_loops',
-            'qc': output_dir / 'qc'
-        }
-    else:  # chiapet
-        step_dirs = {
-            'linker_filtering': output_dir / 'step01_linker_filtering',
-            'mapping': output_dir / 'step02_mapping',
-            'purifying': output_dir / 'step03_purifying',
-            'categorization': output_dir / 'step04_categorization',
-            'peaks': output_dir / 'step05_peaks',
-            'loops': output_dir / 'step06_loops',
-            'qc': output_dir / 'qc'
-        }
-    
-    for d in step_dirs.values():
-        d.mkdir(parents=True, exist_ok=True)
-    
+    logger.info("Output files:")
+    logger.info(f"  Sorted BAM      : {outputs.get('sorted_bam', 'N/A')}")
+    logger.info(f"  Sorted pairs    : {outputs.get('sorted_pairs', 'N/A')}")
+    logger.info(f"  Filtered pairs  : {outputs.get('filtered_pairs', 'N/A')}")
+    logger.info(f"  Contact matrix  : {outputs.get('cool_matrix', 'N/A')}")
+    logger.info(f"  Multi-res matrix: {outputs.get('mcool_matrix', 'N/A')}")
+    if outputs.get('tads_dir'):
+        logger.info(f"  TADs dir        : {outputs['tads_dir']}")
+        if tad_s.get('summary_tsv'):
+            logger.info(f"  TAD summary     : {tad_s['summary_tsv']}")
+        logger.info(f"  TAD combos OK   : {tad_s.get('n_success', 'N/A')}")
+    if outputs.get('loops_dir'):
+        logger.info(f"  Loops dir       : {outputs['loops_dir']}")
+        if loop_s.get('summary_tsv'):
+            logger.info(f"  Loop summary    : {loop_s['summary_tsv']}")
+        n_loops = loop_s.get('n_loops', {})
+        if n_loops:
+            for res, n in n_loops.items():
+                logger.info(f"    {res//1000}kb loops   : {n}")
+    comp_s = stats.get('compartment_calling', {})
+    if outputs.get('compartments_dir'):
+        logger.info(f"  Compartments dir: {outputs['compartments_dir']}")
+        if comp_s.get('summary_tsv'):
+            logger.info(f"  Comp. summary   : {comp_s['summary_tsv']}")
+        for res in comp_s.get('resolutions', []):
+            logger.info(f"    {res//1000}kb compartments: done")
+
+    if timing:
+        logger.info("Timing:")
+        for step, secs in timing.items():
+            if step != 'total':
+                logger.info(f"  {step:<30}: {_fmt_time(secs)}")
+        logger.info(f"  {'Total':<30}: {_fmt_time(timing.get('total', 0))}")
+
+    logger.info("=" * 70)
+
+
+# =============================================================================
+# sn-Hi-C command
+# =============================================================================
+
+def cmd_sn_hic(args):
+    """Run the sn-Hi-C pipeline over multiple cells from a manifest file."""
+    from .hic.sn_hic import SnHiCPipeline
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse manifest: cell_id <TAB> R1 <TAB> R2
+    cells = _parse_manifest(args.manifest)
+    if not cells:
+        logger.error(f"No cells found in manifest: {args.manifest}")
+        return 1
+
+    logger.info("=" * 70)
+    logger.info("CHR3D  —  sn-Hi-C PIPELINE")
+    logger.info("=" * 70)
+    logger.info(f"  Manifest     : {args.manifest}")
+    logger.info(f"  Cells        : {len(cells)}")
+    logger.info(f"  Genome       : {args.genome}")
+    logger.info(f"  Chrom sizes  : {args.chrom_sizes}")
+    logger.info(f"  Output dir   : {output_dir}")
+    logger.info(f"  Threads      : {args.threads}")
+    logger.info(f"  Assembly     : {args.assembly}")
+    logger.info(f"  Min MAPQ     : {args.min_mapq}")
+    logger.info(f"  Min distance : {args.min_distance} bp")
+    logger.info(f"  Resolutions  : {args.resolutions}")
+    logger.info(f"  Splits       : {args.splits}")
+    logger.info(f"  Min contacts : {args.min_contacts}")
+    logger.info(f"  Keep files   : {args.keep_intermediates}")
+    logger.info("=" * 70)
+
     try:
-        # Step 1 for ChIA-PET: Linker Filtering (HiChIP skips this)
-        if args.mode == 'chiapet' and args.linker_a:
-            linker_expected_files = ['filtered.1_1.R1.fastq', 'filtered.1_1.R2.fastq']
-            linker_complete = resume_mode and _check_step_complete(step_dirs['linker_filtering'], linker_expected_files)
-            
-            if linker_complete:
-                logger.info("\n" + "=" * 70)
-                logger.info("STEP 01: LINKER FILTERING (ChIA-PET) - SKIPPED (outputs exist)")
-                logger.info("=" * 70)
-                linker_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist'}
-            else:
-                from .linker_filtering_v3 import LinkerFilterV3
-                
-                logger.info("\n" + "=" * 70)
-                logger.info("STEP 01: LINKER FILTERING (ChIA-PET)")
-                logger.info("=" * 70)
-                
-                linkers = [args.linker_a]
-                if args.linker_b:
-                    linkers.append(args.linker_b)
-                
-                linker_filter = LinkerFilterV3(
-                    linker_sequences=linkers,
-                    min_alignment_score=args.min_score,
-                    min_tag_length=args.min_tag_length,
-                    max_tag_length=args.max_tag_length,
-                    min_second_best_diff=getattr(args, 'min_second_best_diff', 3),
-                    match_score=getattr(args, 'match_score', 1),
-                    mismatch_penalty=getattr(args, 'mismatch_penalty', 1),
-                    gap_open_penalty=getattr(args, 'gap_open_penalty', 1),
-                    gap_extend_penalty=getattr(args, 'gap_extend_penalty', 1),
-                    n_threads=args.threads
-                )
-                
-                linker_stats = linker_filter.filter_fastq_parallel(
-                    fastq_r1=args.fastq_r1,
-                    fastq_r2=args.fastq_r2,
-                    output_prefix='filtered',
-                    output_dir=str(step_dirs['linker_filtering'])
-                )
-                
-                # Write QC for linker filtering
-                _write_step_qc(step_dirs['qc'], 'linker_filtering', '01', linker_stats, args.sample_id)
-                logger.info(f"  QC written to: {step_dirs['qc']}")
-            
-            # Use filtered files for next step
-            # ChIA-PET Tool V3 convention with RC linker pairs:
-            # When linkers A and B are reverse complements (detected automatically in linker_filtering_v3.py):
-            #   - AB (1_2) and BA (2_1) = Same-linker PETs (strand effect - canonical for RC pairs)
-            #   - AA (1_1) and BB (2_2) = Different-linker PETs (rare artifacts)
-            #   - AX, XA, BX, XB = Same-linker single-read PETs
-            #
-            # When linkers are NOT RC pairs (independent barcodes):
-            #   - AA and BB = Same-linker PETs
-            #   - AB and BA = Different-linker PETs
-            #
-            # The linker filtering step already classified these correctly.
-            # We need to use the SAME-linker categories for mapping.
-            
-            # Check if linkers are RC pairs (auto-detected during filtering)
-            # Read from linker filtering stats to determine classification
-            linkers_are_rc_pairs = True  # Default for ChIA-PET with RC linkers
-            
-            # Check for explicit --use-all-linker-pairs flag (uses ALL categories)
-            use_all_pairs = getattr(args, 'use_all_linker_pairs', False)
-            
-            # Define all possible linker pair files
-            linker_pair_files = {
-                'AA': ('filtered.1_1.R1.fastq', 'filtered.1_1.R2.fastq'),
-                'AB': ('filtered.1_2.R1.fastq', 'filtered.1_2.R2.fastq'),
-                'BA': ('filtered.2_1.R1.fastq', 'filtered.2_1.R2.fastq'),
-                'BB': ('filtered.2_2.R1.fastq', 'filtered.2_2.R2.fastq'),
-                'AX': ('filtered.1_X.R1.fastq', 'filtered.1_X.R2.fastq'),
-                'XA': ('filtered.X_1.R1.fastq', 'filtered.X_1.R2.fastq'),
-                'BX': ('filtered.2_X.R1.fastq', 'filtered.2_X.R2.fastq'),
-                'XB': ('filtered.X_2.R1.fastq', 'filtered.X_2.R2.fastq'),
-            }
-            
-            # Count available PETs for QC reporting
-            same_linker_count = 0
-            diff_linker_count = 0
-            for pair_name, (r1_name, _) in linker_pair_files.items():
-                r1_path = step_dirs['linker_filtering'] / r1_name
-                if r1_path.exists():
-                    # Count lines / 4 = number of reads
-                    try:
-                        with open(r1_path) as f:
-                            count = sum(1 for _ in f) // 4
-                        # Correct classification for RC linker pairs
-                        if linkers_are_rc_pairs:
-                            # AB, BA, AX, XA, BX, XB = same-linker; AA, BB = diff-linker
-                            if pair_name in ('AB', 'BA', 'AX', 'XA', 'BX', 'XB'):
-                                same_linker_count += count
-                            else:
-                                diff_linker_count += count
-                        else:
-                            # AA, BB, AX, XA, BX, XB = same-linker; AB, BA = diff-linker
-                            if pair_name in ('AA', 'BB', 'AX', 'XA', 'BX', 'XB'):
-                                same_linker_count += count
-                            else:
-                                diff_linker_count += count
-                    except:
-                        pass
-            
-            total_valid = same_linker_count + diff_linker_count
-            if total_valid > 0:
-                logger.info(f"  Linker composition:")
-                if linkers_are_rc_pairs:
-                    logger.info(f"    Same-linker PETs (AB+BA+AX+XA+BX+XB): {same_linker_count:,} ({100*same_linker_count/total_valid:.2f}%)")
-                    logger.info(f"    Different-linker PETs (AA+BB): {diff_linker_count:,} ({100*diff_linker_count/total_valid:.2f}%)")
-                else:
-                    logger.info(f"    Same-linker PETs (AA+BB+AX+XA+BX+XB): {same_linker_count:,} ({100*same_linker_count/total_valid:.2f}%)")
-                    logger.info(f"    Different-linker PETs (AB+BA): {diff_linker_count:,} ({100*diff_linker_count/total_valid:.2f}%)")
-            
-            linker_files = []
-            for pair_name, (r1_name, r2_name) in linker_pair_files.items():
-                r1_path = str(step_dirs['linker_filtering'] / r1_name)
-                r2_path = str(step_dirs['linker_filtering'] / r2_name)
-                
-                # Determine if this pair should be used for mapping
-                if use_all_pairs:
-                    # Use all pairs
-                    should_use = True
-                else:
-                    # Use only same-linker pairs based on RC status
-                    if linkers_are_rc_pairs:
-                        # AB, BA, AX, XA, BX, XB = same-linker (use these)
-                        should_use = pair_name in ('AB', 'BA', 'AX', 'XA', 'BX', 'XB')
-                    else:
-                        # AA, BB, AX, XA, BX, XB = same-linker (use these)
-                        should_use = pair_name in ('AA', 'BB', 'AX', 'XA', 'BX', 'XB')
-                
-                if should_use and Path(r1_path).exists() and Path(r1_path).stat().st_size > 0:
-                    linker_files.append((pair_name, r1_path, r2_path))
-            
-            if not linker_files:
-                raise FileNotFoundError("No linker-filtered FASTQ files found!")
-            
-            logger.info(f"  Using {len(linker_files)} linker type(s) for mapping: {[lf[0] for lf in linker_files]}")
-            if use_all_pairs:
-                logger.info("  WARNING: --use-all-linker-pairs enabled - using all pairs")
-            else:
-                if linkers_are_rc_pairs:
-                    logger.info("  Using same-linker PETs only (AB+BA+AX+XA+BX+XB) - RC linker pair mode")
-                else:
-                    logger.info("  Using same-linker PETs only (AA+BB+AX+XA+BX+XB) - standard mode")
-        else:
-            # HiChIP uses original FASTQs directly (no linker filtering needed)
-            linker_files = [('single', args.fastq_r1, args.fastq_r2)]
-        
-        # Mapping step - now maps BOTH A-A and B-B, then merges
-        step_num = '01' if args.mode == 'hichip' else '02'
-        mapping_expected_files = ['mapped.dedup.bedpe']
-        mapping_complete = resume_mode and _check_step_complete(step_dirs['mapping'], mapping_expected_files)
-        
-        if mapping_complete:
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: GENOMIC MAPPING - SKIPPED (outputs exist)")
-            logger.info("=" * 70)
-            map_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist'}
-        else:
-            from .mapping_v2 import PETMapper
-            
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: GENOMIC MAPPING")
-            logger.info("=" * 70)
-            
-            # Use BWA-MEM by default, unless --use-bwa-aln is specified
-            use_bwa_mem = not getattr(args, 'use_bwa_aln', False)
-            use_single_end = getattr(args, 'use_single_end', False)
-            parallel_jobs = getattr(args, 'parallel_jobs', 0)
-            
-            mapper = PETMapper(
-                genome_index=args.genome_index,
-                mapping_quality_cutoff=args.mapping_quality,
-                n_threads=args.threads,
-                use_bwa_mem=use_bwa_mem,
-                use_single_end=use_single_end,
-                self_ligation_cutoff=args.self_ligation_cutoff,
-                parallel_jobs=parallel_jobs
-            )
-            
-            # Map each linker type separately, then merge
-            all_bedpe_files = []
-            all_stats = []
-            
-            for linker_type, r1_file, r2_file in linker_files:
-                logger.info(f"\n  --- Mapping Linker {linker_type} reads ---")
-                logger.info(f"  R1: {r1_file}")
-                logger.info(f"  R2: {r2_file}")
-                
-                linker_stats = mapper.map_linker_filtered_fastq(
-                    fastq_r1=r1_file,
-                    fastq_r2=r2_file,
-                    output_prefix=f'mapped_{linker_type}',
-                    output_dir=str(step_dirs['mapping']),
-                    remove_duplicates=False  # Deduplicate AFTER merging all linker types
-                )
-                
-                bedpe_file = str(step_dirs['mapping'] / f'mapped_{linker_type}.bedpe')
-                if Path(bedpe_file).exists():
-                    all_bedpe_files.append(bedpe_file)
-                    all_stats.append(linker_stats)
-                    logger.info(f"  ✓ {linker_type}: {linker_stats.get('valid_pairs', 0):,} valid pairs")
-                else:
-                    logger.warning(f"  ⚠ {linker_type}: BEDPE file not created")
-            
-            # Merge all BEDPE files
-            logger.info(f"\n  --- Merging {len(all_bedpe_files)} BEDPE files ---")
-            merged_bedpe = str(step_dirs['mapping'] / 'mapped.bedpe')
-            
-            total_pairs = 0
-            with open(merged_bedpe, 'w') as out_f:
-                for bedpe_file in all_bedpe_files:
-                    with open(bedpe_file, 'r') as in_f:
-                        for line in in_f:
-                            out_f.write(line)
-                            total_pairs += 1
-            
-            logger.info(f"  ✓ Merged BEDPE: {total_pairs:,} total pairs")
-            
-            # Deduplicate the merged file
-            logger.info(f"\n  --- Deduplicating merged BEDPE ---")
-            dedup_bedpe = str(step_dirs['mapping'] / 'mapped.dedup.bedpe')
-            dup_count = mapper.remove_duplicates(merged_bedpe, dedup_bedpe)
-            
-            unique_pairs = total_pairs - dup_count
-            dup_rate = dup_count / total_pairs if total_pairs > 0 else 0
-            logger.info(f"  ✓ Duplicates removed: {dup_count:,} ({dup_rate*100:.1f}%)")
-            logger.info(f"  ✓ Unique pairs: {unique_pairs:,}")
-            
-            # Aggregate stats from all linker types
-            map_stats = {
-                'total_read_groups': sum(s.get('total_read_groups', 0) for s in all_stats),
-                'valid_pairs': total_pairs,
-                'unique_pets': unique_pairs,
-                'duplicates': dup_count,
-                'duplicate_rate': dup_rate,
-                'intra_chromosomal': sum(s.get('intra_chromosomal', 0) for s in all_stats),
-                'inter_chromosomal': sum(s.get('inter_chromosomal', 0) for s in all_stats),
-                'unmapped': sum(s.get('unmapped', 0) for s in all_stats),
-                'low_quality': sum(s.get('low_quality', 0) for s in all_stats),
-                'not_properly_paired': sum(s.get('not_properly_paired', 0) for s in all_stats),
-                'excessive_distance': sum(s.get('excessive_distance', 0) for s in all_stats),
-                'linker_types_mapped': [lf[0] for lf in linker_files],
-                'per_linker_stats': {linker_files[i][0]: all_stats[i] for i in range(len(all_stats))}
-            }
-            
-            # Cleanup individual BEDPE files (keep only merged)
-            for bedpe_file in all_bedpe_files:
-                try:
-                    Path(bedpe_file).unlink()
-                except:
-                    pass
-            try:
-                Path(merged_bedpe).unlink()  # Remove undeduped merged file
-            except:
-                pass
-            
-            # Write QC for mapping
-            _write_step_qc(step_dirs['qc'], 'mapping', step_num, map_stats, args.sample_id)
-            logger.info(f"  QC written to: {step_dirs['qc']}")
-        
-        bedpe_file = str(step_dirs['mapping'] / 'mapped.dedup.bedpe')
-        
-        # Purifying step
-        step_num = '02' if args.mode == 'hichip' else '03'
-        purify_expected = ['purified.merged.bedpe'] if args.mode == 'chiapet' else ['purified.valid.bedpe']
-        purify_complete = resume_mode and _check_step_complete(step_dirs['purifying'], purify_expected)
-        
-        if purify_complete:
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: PET PURIFYING - SKIPPED (outputs exist)")
-            logger.info("=" * 70)
-            purify_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist'}
-            purified_bedpe = str(step_dirs['purifying'] / purify_expected[0])
-        else:
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: PET PURIFYING")
-            logger.info("=" * 70)
-            
-            if args.mode == 'chiapet':
-                from .chiapet_purifying import ChIAPETPurifier
-                
-                purifier = ChIAPETPurifier(merge_distance=2)
-                purify_stats = purifier.purify(bedpe_file, str(step_dirs['purifying'] / 'purified'))
-                purified_bedpe = str(step_dirs['purifying'] / 'purified.merged.bedpe')
-            else:
-                from .hichip_purifying import HiChIPPurifier
-                
-                purifier = HiChIPPurifier(restriction_file=args.restriction_sites)
-                purify_stats = purifier.remove_same_fragment_pets(
-                    bedpe_file,
-                    str(step_dirs['purifying'] / 'purified.valid.bedpe'),
-                    str(step_dirs['purifying'] / 'purified.sameres.bedpe')
-                )
-                purified_bedpe = str(step_dirs['purifying'] / 'purified.valid.bedpe')
-            
-            # Write QC for purifying
-            _write_step_qc(step_dirs['qc'], 'purifying', step_num, purify_stats, args.sample_id)
-            logger.info(f"  QC written to: {step_dirs['qc']}")
-        
-        # Categorization step
-        step_num = '03' if args.mode == 'hichip' else '04'
-        cat_expected = ['categorized.ipet', 'categorized.spet']
-        cat_complete = resume_mode and _check_step_complete(step_dirs['categorization'], cat_expected)
-        
-        if cat_complete:
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: PET CATEGORIZATION - SKIPPED (outputs exist)")
-            logger.info("=" * 70)
-            cat_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist',
-                        'total': 0, 'ipet': {'count': 0, 'percentage': 0},
-                        'spet': {'count': 0, 'percentage': 0}, 'opet': {'count': 0, 'percentage': 0}}
-        else:
-            from .pet_categorization import PETCategorizer
-            
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: PET CATEGORIZATION")
-            logger.info("=" * 70)
-            
-            cutoff = args.self_ligation_cutoff if args.mode == 'chiapet' else 1000
-            categorizer = PETCategorizer(self_ligation_cutoff=cutoff, mode=args.mode)
-            cat_stats = categorizer.categorize_bedpe(
-                purified_bedpe,
-                str(step_dirs['categorization'] / 'categorized')
-            )
-            
-            # Write QC for categorization
-            _write_step_qc(step_dirs['qc'], 'categorization', step_num, cat_stats, args.sample_id)
-            logger.info(f"  QC written to: {step_dirs['qc']}")
-        
-        ipet_file = str(step_dirs['categorization'] / 'categorized.ipet')
-        spet_file = str(step_dirs['categorization'] / 'categorized.spet')
-        
-        # Peak Calling step
-        step_num = '04' if args.mode == 'hichip' else '05'
-        peak_expected = ['peaks_peaks.narrowPeak']
-        peak_complete = resume_mode and _check_step_complete(step_dirs['peaks'], peak_expected)
-        
-        if peak_complete:
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: PEAK CALLING - SKIPPED (outputs exist)")
-            logger.info("=" * 70)
-            peak_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist', 'num_peaks': 0}
-        else:
-            from .peak_calling import PeakCaller
-            
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: PEAK CALLING")
-            logger.info("=" * 70)
-            
-            peak_caller = PeakCaller(
-                genome_size=args.genome_size,
-                qvalue_cutoff=0.05,
-                keep_dup='all'
-            )
-            peak_stats = peak_caller.call_peaks(
-                spet_file,
-                str(step_dirs['peaks'] / 'peaks')
-            )
-            
-            # Write QC for peak calling
-            _write_step_qc(step_dirs['qc'], 'peaks', step_num, peak_stats, args.sample_id)
-            logger.info(f"  QC written to: {step_dirs['qc']}")
-        
-        # Loop Calling step
-        step_num = '05' if args.mode == 'hichip' else '06'
-        loop_expected = ['loops.cluster.FDRfiltered.txt']
-        loop_complete = resume_mode and _check_step_complete(step_dirs['loops'], loop_expected)
-        
-        if loop_complete:
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: LOOP CALLING - SKIPPED (outputs exist)")
-            logger.info("=" * 70)
-            sig_stats = {'status': 'skipped', 'reason': 'resume mode - outputs exist',
-                        'num_clusters': 0, 'num_significant_loops': 0}
-            precluster_stats = {}
-            cluster_stats = {}
-        else:
-            from .loop_calling import PreClusterer, AnchorClusterer, StatisticalSignificance
-            
-            logger.info("\n" + "=" * 70)
-            logger.info(f"STEP {step_num}: LOOP CALLING")
-            logger.info("=" * 70)
-            
-            # 6.1 Pre-clustering
-            pre_clusterer = PreClusterer(extension_length=args.extension_length)
-            precluster_stats = pre_clusterer.pre_cluster(
-                ipet_file,
-                str(step_dirs['loops'] / 'preclustered')
-            )
-            
-            # 6.2 Anchor clustering
-            anchor_clusterer = AnchorClusterer()
-            cluster_stats = anchor_clusterer.cluster_anchors(
-                precluster_stats['output_file'],
-                str(step_dirs['loops'] / 'clusters.txt')
-            )
-            
-            # 6.3 Statistical significance
-            stat_sig = StatisticalSignificance(
-                ipet_count_threshold=args.ipet_threshold,
-                pvalue_cutoff=args.fdr_cutoff,
-                extension_length=args.extension_length
-            )
-            sig_stats = stat_sig.calculate_significance(
-                str(step_dirs['loops'] / 'clusters.txt'),
-                ipet_file,
-                str(step_dirs['loops'] / 'loops')
-            )
-            
-            # Write QC for loop calling
-            loop_qc = {
-                'precluster': precluster_stats,
-                'anchor_cluster': cluster_stats,
-                'significance': sig_stats
-            }
-            _write_step_qc(step_dirs['qc'], 'loops', step_num, loop_qc, args.sample_id)
-            logger.info(f"  QC written to: {step_dirs['qc']}")
-        
-        # Cleanup intermediate files if requested
-        if not args.keep_intermediates:
-            logger.info("\n" + "=" * 70)
-            logger.info("CLEANING UP INTERMEDIATE FILES")
-            logger.info("=" * 70)
-            
-            import shutil
-            cleanup_patterns = []
-            
-            # Linker filtered files (ChIA-PET only)
-            if 'linker_filtering' in step_dirs and step_dirs['linker_filtering'].exists():
-                for f in step_dirs['linker_filtering'].glob('*.fastq'):
-                    cleanup_patterns.append(f)
-                logger.info(f"  Removing linker-filtered FASTQ files...")
-            
-            # SAM files, unsorted BAM files
-            if step_dirs['mapping'].exists():
-                for pattern in ['*.sam', '*_unsorted.bam', '*.sai']:
-                    for f in step_dirs['mapping'].glob(pattern):
-                        cleanup_patterns.append(f)
-                logger.info(f"  Removing SAM/BAM intermediate files...")
-            
-            # Intermediate purification files
-            if step_dirs['purifying'].exists():
-                for f in step_dirs['purifying'].glob('*.sameres.bedpe'):
-                    cleanup_patterns.append(f)
-                logger.info(f"  Removing purification intermediates...")
-            
-            # Loop calling intermediates
-            if step_dirs['loops'].exists():
-                for pattern in ['*.pre_cluster', '*.pre_cluster.sorted', 'clusters.txt']:
-                    for f in step_dirs['loops'].glob(pattern):
-                        cleanup_patterns.append(f)
-                logger.info(f"  Removing loop calling intermediates...")
-            
-            # Remove files
-            for f in cleanup_patterns:
-                try:
-                    if f.is_file():
-                        f.unlink()
-                except Exception as e:
-                    logger.warning(f"  Could not remove {f}: {e}")
-            
-            logger.info(f"  Cleaned up {len(cleanup_patterns)} intermediate files")
-            logger.info("=" * 70)
-        
-        # Generate QC summary
-        logger.info("\n" + "=" * 70)
-        logger.info("GENERATING QC STATISTICS")
-        logger.info("=" * 70)
-        
-        qc_summary = {
-            'sample_id': args.sample_id,
-            'mode': args.mode,
-            'mapping': {
-                'total_pets': map_stats.get('total_pets', 'N/A'),
-                'mapped_pets': map_stats.get('mapped_pets', 'N/A'),
-                'unique_pets': map_stats.get('unique_pets', 'N/A'),
-                'duplicate_rate': map_stats.get('duplicate_rate', 'N/A'),
-            },
-            'purification': {
-                'total_pets': purify_stats.get('total_pets', 'N/A'),
-                'valid_pets': purify_stats.get('valid_pets', 'N/A'),
-                'same_fragment_pets': purify_stats.get('same_fragment_pets', 'N/A'),
-                'valid_ratio': purify_stats.get('valid_ratio', 'N/A'),
-            },
-            'categorization': {
-                'total': cat_stats.get('total', 0),
-                'ipet_count': cat_stats['ipet']['count'],
-                'ipet_percentage': cat_stats['ipet']['percentage'],
-                'spet_count': cat_stats['spet']['count'],
-                'spet_percentage': cat_stats['spet']['percentage'],
-                'opet_count': cat_stats['opet']['count'],
-                'opet_percentage': cat_stats['opet']['percentage'],
-                'cis_percentage': cat_stats.get('cis', {}).get('percentage', 'N/A'),
-                'trans_percentage': cat_stats.get('trans', {}).get('percentage', 'N/A'),
-            },
-            'peaks': {
-                'num_peaks': peak_stats.get('num_peaks', 0),
-            },
-            'loops': {
-                'total_clusters': sig_stats.get('num_clusters', 'N/A'),
-                'significant_loops': sig_stats.get('num_significant_loops', 0),
-            }
-        }
-        
-        # Write QC summary to file
-        qc_file = step_dirs['qc'] / f'{args.sample_id}_qc_summary.txt'
-        with open(qc_file, 'w') as f:
-            f.write(f"{'=' * 70}\n")
-            f.write(f"{args.mode.upper()} QC SUMMARY\n")
-            f.write(f"{'=' * 70}\n")
-            f.write(f"Sample ID: {args.sample_id}\n")
-            f.write(f"Mode: {args.mode}\n")
-            f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            
-            f.write(f"MAPPING STATISTICS\n")
-            f.write(f"-" * 40 + "\n")
-            f.write(f"Total PETs: {qc_summary['mapping']['total_pets']}\n")
-            f.write(f"Mapped PETs: {qc_summary['mapping']['mapped_pets']}\n")
-            f.write(f"Unique PETs: {qc_summary['mapping']['unique_pets']}\n")
-            dup_rate = qc_summary['mapping']['duplicate_rate']
-            if isinstance(dup_rate, (int, float)):
-                f.write(f"Duplicate Rate: {dup_rate*100:.1f}%\n")
-            else:
-                f.write(f"Duplicate Rate: {dup_rate}\n")
-            f.write("\n")
-            
-            f.write(f"PURIFICATION STATISTICS\n")
-            f.write(f"-" * 40 + "\n")
-            f.write(f"Total PETs: {qc_summary['purification']['total_pets']}\n")
-            f.write(f"Valid PETs: {qc_summary['purification']['valid_pets']}\n")
-            f.write(f"Same-fragment PETs: {qc_summary['purification']['same_fragment_pets']}\n")
-            valid_ratio = qc_summary['purification']['valid_ratio']
-            if isinstance(valid_ratio, (int, float)):
-                f.write(f"Valid Ratio: {valid_ratio*100:.1f}%\n")
-            else:
-                f.write(f"Valid Ratio: {valid_ratio}\n")
-            f.write("\n")
-            
-            f.write(f"CATEGORIZATION STATISTICS\n")
-            f.write(f"-" * 40 + "\n")
-            f.write(f"Total PETs: {qc_summary['categorization']['total']:,}\n")
-            f.write(f"iPETs: {qc_summary['categorization']['ipet_count']:,} ({qc_summary['categorization']['ipet_percentage']:.1f}%)\n")
-            f.write(f"sPETs: {qc_summary['categorization']['spet_count']:,} ({qc_summary['categorization']['spet_percentage']:.1f}%)\n")
-            f.write(f"oPETs: {qc_summary['categorization']['opet_count']:,} ({qc_summary['categorization']['opet_percentage']:.1f}%)\n")
-            f.write(f"Cis Ratio: {qc_summary['categorization']['cis_percentage']}%\n")
-            f.write(f"Trans Ratio: {qc_summary['categorization']['trans_percentage']}%\n")
-            f.write("\n")
-            
-            f.write(f"PEAK CALLING STATISTICS\n")
-            f.write(f"-" * 40 + "\n")
-            f.write(f"Peaks Called: {qc_summary['peaks']['num_peaks']:,}\n")
-            f.write("\n")
-            
-            f.write(f"LOOP CALLING STATISTICS\n")
-            f.write(f"-" * 40 + "\n")
-            f.write(f"Total Clusters: {qc_summary['loops']['total_clusters']}\n")
-            f.write(f"Significant Loops (FDR < {args.fdr_cutoff}): {qc_summary['loops']['significant_loops']:,}\n")
-            f.write("\n")
-            
-            f.write(f"{'=' * 70}\n")
-        
-        logger.info(f"QC summary written to: {qc_file}")
-        
-        # Generate comprehensive ChIA-PET quality report
-        if args.mode == 'chiapet':
-            from .chiapet_qc_report import generate_chiapet_report
-            
-            logger.info("\n" + "=" * 70)
-            logger.info("GENERATING COMPREHENSIVE QUALITY REPORT")
-            logger.info("=" * 70)
-            
-            report_file = step_dirs['qc'] / f'{args.sample_id}_comprehensive_qc_report.txt'
-            try:
-                report = generate_chiapet_report(
-                    qc_dir=str(step_dirs['qc']),
-                    sample_id=args.sample_id,
-                    output_file=str(report_file),
-                    output_dir=str(output_dir),
-                    genome=args.assembly if hasattr(args, 'assembly') else 'hg38',
-                    self_ligation_cutoff=args.self_ligation_cutoff,
-                    extension_length=args.extension_length,
-                    threads=args.threads
-                )
-                logger.info(f"Comprehensive QC report written to: {report_file}")
-            except Exception as e:
-                logger.warning(f"Could not generate comprehensive report: {e}")
-        
-        # Final summary
-        logger.info("\n" + "=" * 70)
-        logger.info(f"{args.mode.upper()} PIPELINE COMPLETE!")
-        logger.info("=" * 70)
-        logger.info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"\nFinal outputs:")
-        logger.info(f"  iPET file: {ipet_file}")
-        logger.info(f"  sPET file: {spet_file}")
-        logger.info(f"  Peaks: {step_dirs['peaks'] / 'peaks_peaks.narrowPeak'}")
-        logger.info(f"  Loops: {step_dirs['loops'] / 'loops.cluster.FDRfiltered.txt'}")
-        logger.info(f"  QC Summary: {qc_file}")
-        logger.info(f"\nSummary:")
-        logger.info(f"  Total PETs: {cat_stats['total']:,}")
-        logger.info(f"  iPETs: {cat_stats['ipet']['count']:,} ({cat_stats['ipet']['percentage']:.1f}%)")
-        logger.info(f"  sPETs: {cat_stats['spet']['count']:,} ({cat_stats['spet']['percentage']:.1f}%)")
-        logger.info(f"  Peaks: {peak_stats.get('num_peaks', 0):,}")
-        logger.info(f"  Significant loops: {sig_stats['num_significant_loops']:,}")
-        
-        if args.keep_intermediates:
-            logger.info(f"\nIntermediate files kept in:")
-            for step_name, step_dir in step_dirs.items():
-                logger.info(f"  {step_name}: {step_dir}")
-        
-        logger.info("=" * 70)
-        
+        resolutions = [int(r) for r in args.resolutions.split(',')]
+
+        pipeline = SnHiCPipeline(
+            genome_index=args.genome,
+            chrom_sizes=args.chrom_sizes,
+            threads=args.threads,
+            assembly=args.assembly,
+            min_mapq=args.min_mapq,
+            min_distance=args.min_distance,
+            resolutions=resolutions,
+            min_contacts_per_cell=args.min_contacts,
+        )
+
+        stats = pipeline.run(
+            cells=cells,
+            output_dir=str(output_dir),
+            run_clustering=False,       # Clustering left for future implementation
+            cleanup=not args.keep_intermediates,
+        )
+
+        _print_sn_hic_summary(stats, output_dir)
         return 0
-        
+
     except Exception as e:
-        logger.error(f"{args.mode.upper()} pipeline failed: {e}")
+        logger.error(f"sn-Hi-C pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def _parse_manifest(manifest_path: str):
+    """
+    Parse sn-Hi-C manifest file.
+
+    Expected format (tab-separated, with or without header):
+        cell_id    R1.fastq.gz    R2.fastq.gz
+    """
+    cells = []
+    with open(manifest_path) as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t')
+            if len(parts) != 3:
+                logger.warning(f"  Manifest line {lineno} skipped (expected 3 tab-separated columns): {line[:50]}...")
+                continue
+            cell_id, r1, r2 = parts
+            # Skip header line
+            if cell_id.strip().lower() in ('cell_id', 'id', 'sample', 'sample_id'):
+                continue
+            if not Path(r1).exists():
+                logger.warning(f"  Cell {cell_id}: R1 not found: {r1}")
+            if not Path(r2).exists():
+                logger.warning(f"  Cell {cell_id}: R2 not found: {r2}")
+            cells.append((cell_id.strip(), r1.strip(), r2.strip()))
+    return cells
+
+
+def _print_sn_hic_summary(stats: dict, output_dir: Path):
+    """Print a clean summary after sn-Hi-C completes."""
+    timing         = stats.get('timing', {})
+    passing_cells  = stats.get('passing_cells', [])
+    failing_cells  = stats.get('failing_cells', [])
+    n_input        = stats.get('num_cells_input', 0)
+
+    logger.info("\n" + "=" * 70)
+    logger.info("sn-Hi-C COMPLETE")
+    logger.info("=" * 70)
+    logger.info(f"  Cells processed : {n_input}")
+    logger.info(f"  Cells passing QC: {len(passing_cells)}")
+    logger.info(f"  Cells failing QC: {len(failing_cells)}")
+    logger.info(f"  Output dir      : {output_dir}")
+    logger.info(f"  Pseudobulk cool : {output_dir}/pseudobulk/pseudobulk.cool")
+    logger.info(f"  Cell QC report  : {output_dir}/qc/cell_qc_summary.txt")
+
+    if timing:
+        logger.info("Timing:")
+        for step, secs in timing.items():
+            if step != 'total':
+                logger.info(f"  {step:<25}: {_fmt_time(secs)}")
+        logger.info(f"  {'Total':<25}: {_fmt_time(timing.get('total', 0))}")
+
+    logger.info("=" * 70)
+
+
+# =============================================================================
+# Shared helpers
+# =============================================================================
+
+def _fmt_time(seconds: float) -> str:
+    """Format seconds to a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        return f"{seconds/60:.1f} min"
+    else:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}h {m}m"
+
+
+# =============================================================================
+# ChIA-PET command
+# =============================================================================
+
+def cmd_chia_pet(args):
+    """Run the complete ChIA-PET pipeline."""
+    from .peak_based.chiapet_pipeline import ChiaPetPipeline
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    linkers = [s.strip() for s in args.linkers.split(',') if s.strip()]
+
+    logger.info("=" * 70)
+    logger.info("CHR3D  —  ChIA-PET PIPELINE")
+    logger.info("=" * 70)
+    logger.info(f"  Sample ID    : {args.sample_id}")
+    logger.info(f"  R1           : {args.r1}")
+    logger.info(f"  R2           : {args.r2}")
+    logger.info(f"  Genome       : {args.genome}")
+    logger.info(f"  Linkers      : {linkers}")
+    logger.info(f"  Threads      : {args.threads}")
+    logger.info(f"  MAPQ         : {args.mapq}")
+    logger.info(f"  Genome size  : {args.genome_size}")
+    logger.info(f"  Q-value      : {args.qvalue}")
+    logger.info(f"  FDR alpha    : {args.alpha}")
+    logger.info(f"  Std chroms   : {args.standard_chroms}")
+    logger.info(f"  Cytoband     : {args.cytoband}")
+    logger.info(f"  Output dir   : {output_dir}")
+    logger.info("=" * 70)
+
+    try:
+        pipeline = ChiaPetPipeline(
+            genome_index=args.genome,
+            linkers=linkers,
+            threads=args.threads,
+            mapq=args.mapq,
+            genome_size=args.genome_size,
+            qvalue=args.qvalue,
+            alpha=args.alpha,
+            min_score=args.min_score,
+            min_tag=args.min_tag,
+            max_tag=args.max_tag,
+            standard_chroms_only=args.standard_chroms,
+            cytoband_file=args.cytoband,
+            keep_intermediates=args.keep_intermediates,
+        )
+
+        stats = pipeline.run(
+            fastq_r1=args.r1,
+            fastq_r2=args.r2,
+            output_dir=str(output_dir),
+            sample_id=args.sample_id,
+        )
+
+        _print_chia_pet_summary(stats, output_dir, args.sample_id)
+        return 0
+
+    except Exception as e:
+        logger.error(f"ChIA-PET pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def _print_chia_pet_summary(stats: dict, output_dir: Path, sample_id: str):
+    """Print clean summary after ChIA-PET pipeline completes."""
+    timing     = stats.get('timing', {})
+    peak_stats = stats.get('peak_stats', {})
+    loop_stats = stats.get('loop_stats', {})
+    classify   = loop_stats.get('classify', {})
+
+    logger.info("\n" + "=" * 70)
+    logger.info("ChIA-PET COMPLETE")
+    logger.info("=" * 70)
+    logger.info(f"  Peaks called     : {peak_stats.get('num_peaks', 'N/A')}")
+    logger.info(f"  P2P PETs         : {classify.get('P2P', 'N/A')}")
+    logger.info(f"  D2D PETs         : {classify.get('D2D', 'N/A')}")
+    logger.info(f"  Loops (FDR)      : {loop_stats.get('loops_csv', 'N/A')}")
+    logger.info(f"  QC report        : {output_dir}/qc/{sample_id}_pipeline_summary.txt")
+
+    if timing:
+        logger.info("Timing:")
+        for step, secs in timing.items():
+            if step != 'total':
+                logger.info(f"  {step:<22}: {_fmt_time(secs)}")
+        logger.info(f"  {'Total':<22}: {_fmt_time(timing.get('total', 0))}")
+
+    logger.info("=" * 70)
+
+
+# =============================================================================
+# Argument parser
+# =============================================================================
+
+def _add_common_hic_args(parser):
+    """Add arguments shared between bulk-hic and sn-hic."""
+    # Required
+    req = parser.add_argument_group('required arguments')
+    req.add_argument('--genome',      required=True, metavar='PATH',
+                     help='BWA-indexed genome FASTA (e.g. /ref/hg38.fa)')
+    req.add_argument('--chrom-sizes', required=True, metavar='PATH',
+                     help='Chromosome sizes file (e.g. hg38.chrom.sizes)')
+    req.add_argument('--output-dir',  required=True, metavar='DIR',
+                     help='Output directory (created if it does not exist)')
+
+    # Processing
+    proc = parser.add_argument_group('processing')
+    proc.add_argument('--threads',    type=int, default=4,    metavar='N',
+                      help='Number of CPU threads (default: 4)')
+    proc.add_argument('--splits',     type=int, default=0,    metavar='N',
+                      help='Split FASTQ into N chunks for parallel alignment; '
+                           '0 = no splitting (default: 0)')
+    proc.add_argument('--assembly',   default='hg38', metavar='NAME',
+                      help='Genome assembly name written into .cool metadata (default: hg38)')
+
+    # Filtering
+    filt = parser.add_argument_group('filtering')
+    filt.add_argument('--min-mapq',     type=int, default=30,
+                      metavar='INT', help='Minimum BWA mapping quality (default: 30)')
+    filt.add_argument('--min-distance', type=int, default=1000,
+                      metavar='BP',  help='Minimum pair distance in bp (default: 1000)')
+    filt.add_argument('--resolutions',  default='1000,5000,10000',
+                      metavar='CSV',
+                      help='Comma-separated list of matrix resolutions in bp '
+                           '(default: 1000,5000,10000)')
+
+    # TAD calling
+    tad = parser.add_argument_group('TAD calling')
+    tad.add_argument('--no-tads', action='store_true',
+                     help='Skip TAD / insulation score calling (default: run)')
+    tad.add_argument('--tad-windows', default=None, metavar='CSV',
+                     help='Comma-separated insulation window sizes in bp '
+                          '(default: 30000,50000,100000,200000,500000,1000000)')
+
+    # Loop calling
+    lp = parser.add_argument_group('loop calling')
+    lp.add_argument('--no-loops', action='store_true',
+                    help='Skip Hi-C loop calling (default: run)')
+    lp.add_argument('--loop-fdr', type=float, default=0.1, metavar='FLOAT',
+                    help='FDR threshold for loop significance (default: 0.1)')
+
+    # Restriction enzyme
+    re_grp = parser.add_argument_group('restriction enzyme')
+    re_grp.add_argument('--restriction-enzyme', default=None, metavar='NAME_OR_SITE',
+                        help='Restriction enzyme name (HindIII, DpnII, MboI, BglII, Arima) '
+                             'or recognition site with cut position (e.g. A^AGCTT). '
+                             'Use "none" for DNase Hi-C / Micro-C (default: none)')
+    re_grp.add_argument('--fragment-bed', default=None, metavar='BED',
+                        help='Pre-computed restriction fragment BED file. '
+                             'If provided with --restriction-enzyme, skips auto-generation.')
+
+    # A/B Compartment calling
+    comp = parser.add_argument_group('compartment calling')
+    comp.add_argument('--no-compartments', action='store_true',
+                      help='Skip A/B compartment calling (default: run)')
+    comp.add_argument('--compartment-phasing-track', default=None, metavar='BED',
+                      help='BED file (chrom,start,end,value) to orient E1 sign, '
+                           'e.g. gene density track (default: None, sign unoriented)')
+
+    # Output control
+    out = parser.add_argument_group('output')
+    out.add_argument('--keep-intermediates', action='store_true',
+                     help='Keep intermediate BAM / pairs files (default: delete them)')
+
+    # Logging
+    log = parser.add_argument_group('logging')
+    log.add_argument('-v', '--verbose', action='store_true',
+                     help='Enable DEBUG-level logging')
+    log.add_argument('--log-file', metavar='FILE',
+                     help='Write log to FILE in addition to stdout')
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog='chr3d',
+        description='Chr3D  —  Hi-C data processing pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    subparsers = parser.add_subparsers(dest='command', metavar='COMMAND')
+
+    # ------------------------------------------------------------------
+    # bulk-hic
+    # ------------------------------------------------------------------
+    bulk = subparsers.add_parser(
+        'bulk-hic',
+        help='Bulk Hi-C pipeline  (1 sample: alignment → samtools → pairtools → cooltools)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Bulk Hi-C Pipeline
+==================
+Steps:
+  1. Alignment    BWA MEM  →  SAM
+  2. SAM/BAM      samtools sort / index  →  sorted BAM  +  flagstat
+  3. Pairs        pairtools parse / sort / dedup / filter  →  .pairs.gz
+  4. Matrix       cooler cload / zoomify  →  .cool  +  .mcool
+
+Output layout:
+  <output-dir>/
+  ├── aligned/     sorted BAM + flagstat
+  ├── pairs/       .pairs.gz files
+  └── matrices/    .cool + .mcool
+""",
+    )
+    inp = bulk.add_argument_group('inputs')
+    inp.add_argument('--r1',        required=True, metavar='FASTQ',
+                     help='R1 FASTQ file (gzipped or plain)')
+    inp.add_argument('--r2',        required=True, metavar='FASTQ',
+                     help='R2 FASTQ file (gzipped or plain)')
+    inp.add_argument('--sample-id', default='sample', metavar='STR',
+                     help='Sample identifier used in output file names (default: sample)')
+    _add_common_hic_args(bulk)
+    bulk.set_defaults(func=cmd_bulk_hic)
+
+    # ------------------------------------------------------------------
+    # sn-hic
+    # ------------------------------------------------------------------
+    sn = subparsers.add_parser(
+        'sn-hic',
+        help='Single-nucleus Hi-C pipeline  (N cells: per-cell loop → pseudobulk)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Single-Nucleus Hi-C Pipeline
+=============================
+Steps (run for EACH cell in the manifest):
+  1. Alignment    BWA MEM  →  SAM
+  2. SAM/BAM      samtools sort / index  →  sorted BAM  +  flagstat
+  3. Pairs        pairtools parse / sort / dedup / filter  →  .pairs.gz
+  4. Matrix       cooler cload / zoomify  →  per-cell .cool
+
+After all cells:
+  5. Cell QC      Filter cells by min-contacts threshold
+  6. Pseudobulk   cooler merge passing cells  →  pseudobulk .cool + .mcool
+
+Manifest format (tab-separated, no header):
+  cell_id    R1.fastq.gz    R2.fastq.gz
+
+Output layout:
+  <output-dir>/
+  ├── cells/
+  │   ├── <cell_id>/
+  │   │   ├── aligned/    sorted BAM
+  │   │   ├── pairs/      .pairs.gz
+  │   │   └── matrices/   per-cell .cool
+  │   └── ...
+  ├── pseudobulk/          pseudobulk.cool + pseudobulk.mcool
+  └── qc/                  cell_qc_summary.txt + passing_cells.txt
+""",
+    )
+    inp = sn.add_argument_group('inputs')
+    inp.add_argument('--manifest', required=True, metavar='TSV',
+                     help='Tab-separated manifest: cell_id  R1.fastq.gz  R2.fastq.gz')
+    _add_common_hic_args(sn)
+
+    qc = sn.add_argument_group('cell QC')
+    qc.add_argument('--min-contacts', type=int, default=1000, metavar='INT',
+                    help='Minimum valid contacts to keep a cell (default: 1000)')
+
+    sn.set_defaults(func=cmd_sn_hic)
+
+    # ------------------------------------------------------------------
+    # chia-pet
+    # ------------------------------------------------------------------
+    chia = subparsers.add_parser(
+        'chia-pet',
+        help='ChIA-PET pipeline  (linker filtering → mapping → peak calling → loop calling)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+ChIA-PET Pipeline
+=================
+Steps:
+  1. Linker filtering   parasail SIMD  →  filtered FASTQ (same-linker PETs)
+  2. Mapping            BWA MEM        →  BAM + BEDPE (deduplicated)
+  3. Peak calling       MACS3          →  broadPeak / narrowPeak
+  4. Background model
+     4a. classify_pets  →  P2P / P2D / D2D PET files
+     4b. extract_templates  →  templates.csv
+     4c. NB sampling    →  templates_with_nb.csv
+     4d. p-values       →  templates_with_pvalues.csv
+     4e. FDR correction →  significant_loops.csv
+
+Output layout:
+  <output-dir>/
+  ├── filtered/    per-linker-category FASTQ + merged filtered FASTQ
+  ├── mapped/      BAM, BEDPE, dedup BEDPE + flagstat
+  ├── peaks/       MACS3 broadPeak + summits
+  ├── loops/
+  │   ├── classified/   P2P / P2D / D2D PET files
+  │   ├── templates/    templates.csv, NB params, p-values
+  │   └── results/      significant_loops.csv
+  └── qc/              pipeline_summary.txt
+""",
+    )
+    inp = chia.add_argument_group('inputs')
+    inp.add_argument('--r1',        required=True, metavar='FASTQ',
+                     help='R1 FASTQ file (gzipped or plain)')
+    inp.add_argument('--r2',        required=True, metavar='FASTQ',
+                     help='R2 FASTQ file (gzipped or plain)')
+    inp.add_argument('--sample-id', default='sample', metavar='STR',
+                     help='Sample identifier used in output file names (default: sample)')
+    inp.add_argument('--genome',    required=True, metavar='PATH',
+                     help='BWA-indexed genome FASTA')
+    inp.add_argument('--output-dir', required=True, metavar='DIR',
+                     help='Output directory (created if absent)')
+
+    lnk = chia.add_argument_group('linker filtering')
+    lnk.add_argument('--linkers', required=True, metavar='SEQ[,SEQ]',
+                     help='Comma-separated linker sequence(s) (e.g. ACGCGATATCGCG)')
+    lnk.add_argument('--min-score',  type=int, default=20, metavar='INT',
+                     help='Minimum parasail alignment score (default: 20)')
+    lnk.add_argument('--min-tag',    type=int, default=15, metavar='INT',
+                     help='Minimum genomic tag length after linker removal (default: 15)')
+    lnk.add_argument('--max-tag',    type=int, default=40, metavar='INT',
+                     help='Maximum genomic tag length after linker removal (default: 40)')
+
+    mp = chia.add_argument_group('mapping')
+    mp.add_argument('--mapq',     type=int, default=30, metavar='INT',
+                    help='Minimum mapping quality (default: 30)')
+    mp.add_argument('--threads',  type=int, default=4,  metavar='N',
+                    help='CPU threads for BWA / samtools (default: 4)')
+
+    pk = chia.add_argument_group('peak calling')
+    pk.add_argument('--genome-size', default='hs', metavar='STR',
+                    help='MACS3 genome size: hs, mm, or integer (default: hs)')
+    pk.add_argument('--qvalue',      type=float, default=0.05, metavar='FLOAT',
+                    help='MACS3 q-value cutoff (default: 0.05)')
+
+    lp = chia.add_argument_group('loop calling')
+    lp.add_argument('--alpha',             type=float, default=0.05, metavar='FLOAT',
+                    help='FDR significance threshold (default: 0.05)')
+    lp.add_argument('--standard-chroms',   action='store_true',
+                    help='Restrict loop calling to chr1-22 + chrX/Y')
+    lp.add_argument('--cytoband',          metavar='FILE',
+                    help='UCSC cytoband file for centromere exclusion (optional)')
+
+    out = chia.add_argument_group('output')
+    out.add_argument('--keep-intermediates', action='store_true',
+                     help='Keep intermediate BAM files (default: delete)')
+
+    log = chia.add_argument_group('logging')
+    log.add_argument('-v', '--verbose', action='store_true',
+                     help='Enable DEBUG-level logging')
+    log.add_argument('--log-file', metavar='FILE',
+                     help='Write log to FILE in addition to stdout')
+
+    chia.set_defaults(func=cmd_chia_pet)
+
+    # ------------------------------------------------------------------
+    # digest
+    # ------------------------------------------------------------------
+    dig = subparsers.add_parser(
+        'digest',
+        help='Generate restriction fragment BED from a genome FASTA',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Generate Restriction Fragment BED
+===================================
+In silico digest a genome FASTA with a restriction enzyme and output a
+BED file of fragments.  This BED file can be passed to bulk-hic / sn-hic
+via --fragment-bed to enable fragment-aware pair parsing with pairtools.
+
+Supported enzyme names: HindIII, DpnII, MboI, BglII, Sau3AI, Hinf1,
+                         NlaIII, AluI, EcoRI, BamHI, PstI, SalI, XbaI
+Or pass the raw recognition site with cut position, e.g. A^AGCTT.
+
+For Arima Hi-C (dual enzyme) use:
+  chr3d digest --enzyme MboI --enzyme GATC^  -o arima_frags.bed genome.fa
+""",
+    )
+    dig.add_argument('genome', metavar='FASTA',
+                     help='Genome FASTA file (plain or gzipped)')
+    dig.add_argument('-e', '--enzyme', dest='enzymes', required=True,
+                     action='append', metavar='NAME_OR_SITE',
+                     help='Enzyme name or recognition site (e.g. HindIII or A^AGCTT). '
+                          'Repeat flag for multiple enzymes (Arima kit)')
+    dig.add_argument('-o', '--output', required=True, metavar='BED',
+                     help='Output BED file path')
+    dig.add_argument('--min-size', type=int, default=20, metavar='INT',
+                     help='Minimum fragment size to keep in bp (default: 20)')
+    dig.add_argument('--max-size', type=int, default=10_000_000, metavar='INT',
+                     help='Maximum fragment size to keep in bp (default: 10000000)')
+    dig.add_argument('-v', '--verbose', action='store_true',
+                     help='Enable DEBUG-level logging')
+    dig.add_argument('--log-file', metavar='FILE',
+                     help='Write log to FILE in addition to stdout')
+    dig.set_defaults(func=cmd_digest)
+
+    return parser
+
+
+def cmd_digest(args):
+    """Run standalone restriction enzyme genome digestion."""
+    from .utils.restriction_sites import RestrictionSiteGenerator
+
+    enzyme = args.enzymes if len(args.enzymes) > 1 else args.enzymes[0]
+
+    logger.info("=" * 70)
+    logger.info("CHR3D  —  RESTRICTION ENZYME DIGEST")
+    logger.info("=" * 70)
+    logger.info(f"  Genome   : {args.genome}")
+    logger.info(f"  Enzyme(s): {enzyme}")
+    logger.info(f"  Output   : {args.output}")
+    logger.info(f"  Min size : {args.min_size} bp")
+    logger.info(f"  Max size : {args.max_size} bp")
+    logger.info("=" * 70)
+
+    try:
+        gen = RestrictionSiteGenerator(
+            enzyme=enzyme,
+            min_frag_size=args.min_size,
+            max_frag_size=args.max_size,
+        )
+        stats = gen.generate_sites(args.genome, args.output)
+
+        logger.info("=" * 70)
+        logger.info("DIGEST COMPLETE")
+        logger.info(f"  Chromosomes : {stats['chromosomes']}")
+        logger.info(f"  RE sites    : {stats['total_sites']:,}")
+        logger.info(f"  Fragments   : {stats['total_fragments'] - stats['filtered_fragments']:,}")
+        logger.info(f"  Filtered    : {stats['filtered_fragments']:,} (outside size range)")
+        logger.info(f"  Output BED  : {args.output}")
+        logger.info("=" * 70)
+        return 0
+
+    except Exception as e:
+        logger.error(f"Digest failed: {e}")
         import traceback
         traceback.print_exc()
         return 1
 
 
 def main():
-    """Main entry point for the CLI."""
-    parser = argparse.ArgumentParser(
-        prog='chr3d',
-        description='Chr3D: Complete Pipeline for ChIA-PET, HiChIP, and Hi-C Analysis',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # ChIA-PET Analysis (complete pipeline)
-  chr3d run --mode chiapet \\
-      --fastq-r1 sample_R1.fastq.gz \\
-      --fastq-r2 sample_R2.fastq.gz \\
-      --genome-index /path/to/hg38.fa \\
-      --linker-a GTTGGATAAG \\
-      --linker-b GTTGGAATGT \\
-      --output-dir results/ \\
-      --threads 24 \\
-      --keep-intermediates
+    parser = build_parser()
+    args   = parser.parse_args()
 
-  # HiChIP Analysis (complete pipeline)
-  chr3d run --mode hichip \\
-      --fastq-r1 sample_R1.fastq.gz \\
-      --fastq-r2 sample_R2.fastq.gz \\
-      --genome-index /path/to/hg38.fa \\
-      --restriction-sites /path/to/MboI_sites.bed \\
-      --output-dir results/ \\
-      --threads 24 \\
-      --keep-intermediates
-
-  # Hi-C Analysis (complete pipeline)
-  chr3d run --mode hic \\
-      --fastq-r1 sample_R1.fastq.gz \\
-      --fastq-r2 sample_R2.fastq.gz \\
-      --genome-index /path/to/hg38.fa \\
-      --chrom-sizes /path/to/hg38.chrom.sizes \\
-      --output-dir results/ \\
-      --threads 24 \\
-      --resolution 1000,5000,10000 \\
-      --keep-intermediates
-
-Note: Use --keep-intermediates to retain all intermediate files (SAM, BAM, etc.)
-      By default, intermediate files are removed to save disk space.
-
-For more information: https://github.com/rudrajoshi2481/Chr3D
-        """
+    setup_logging(
+        verbose=getattr(args, 'verbose', False),
+        log_file=getattr(args, 'log_file', None),
     )
-    
-    parser.add_argument('--version', action='version', version='%(prog)s 3.2.0')
-    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    parser.add_argument('--log-file', help='Log file path')
-    
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-    
-    # =========================================================================
-    # run - Complete pipeline (MAIN COMMAND)
-    # =========================================================================
-    run_parser = subparsers.add_parser('run', help='Run complete pipeline')
-    run_parser.add_argument('--mode', choices=['chiapet', 'hichip', 'hic'], required=True,
-                           help='Analysis mode: chiapet, hichip, or hic')
-    # Required inputs
-    run_parser.add_argument('--fastq-r1', required=True, help='Input R1 FASTQ file')
-    run_parser.add_argument('--fastq-r2', required=True, help='Input R2 FASTQ file')
-    run_parser.add_argument('--genome-index', required=True, help='BWA-indexed genome FASTA')
-    run_parser.add_argument('--output-dir', required=True, help='Output directory')
-    
-    # Mode-specific required inputs
-    run_parser.add_argument('--linker-a', help='Linker A sequence (required for chiapet/hichip)')
-    run_parser.add_argument('--linker-b', help='Linker B sequence (optional for chiapet/hichip)')
-    run_parser.add_argument('--restriction-sites', help='Restriction sites BED file (required for hichip)')
-    run_parser.add_argument('--chrom-sizes', help='Chromosome sizes file (required for hic)')
-    
-    # Performance options
-    run_parser.add_argument('--threads', type=int, default=24, help='Number of threads (default: 24)')
-    run_parser.add_argument('--use-bwa-mem', action='store_true', default=True, help='Use BWA-MEM (default: True)')
-    run_parser.add_argument('--use-bwa-aln', action='store_true', help='Use BWA-ALN instead of BWA-MEM')
-    run_parser.add_argument('--use-single-end', action='store_true', help='Use BWA-ALN + SAMSE for very short reads (<35bp)')
-    run_parser.add_argument('--parallel-jobs', type=int, default=0,
-                           help='Number of parallel BWA processes (0=auto). Use this to maximize CPU utilization. '
-                                'E.g., --threads 60 --parallel-jobs 15 runs 15 parallel BWA processes with 4 threads each.')
-    
-    # Linker filtering parameters (aligned with ChIA-PET Tool V3 defaults)
-    run_parser.add_argument('--min-tag-length', type=int, default=18,
-                           help='Minimum tag length after linker removal (default: 18, same as V3)')
-    run_parser.add_argument('--max-tag-length', type=int, default=1000,
-                           help='Maximum tag length (default: 1000)')
-    run_parser.add_argument('--min-score', type=int, default=14,
-                           help='Minimum linker alignment score (default: 14, same as V3 long-read mode)')
-    run_parser.add_argument('--min-second-best-diff', type=int, default=3,
-                           help='Min score difference between best and 2nd best linker match to avoid ambiguity (default: 3, same as V3)')
-    run_parser.add_argument('--use-all-linker-pairs', action='store_true',
-                           help='Use ALL linker pairs (AA, AB, BA, BB) instead of just same-linker PETs (AA+BB). '
-                                'WARNING: This is NOT V3 compatible and should only be used for true single-linker protocols '
-                                'where there is no A/B half-linker distinction. Default behavior uses only AA+BB (V3 compatible).')
-    
-    # Advanced linker scoring parameters (for debugging/tuning)
-    run_parser.add_argument('--match-score', type=int, default=1,
-                           help='Score for matching bases in linker alignment (default: 1)')
-    run_parser.add_argument('--mismatch-penalty', type=int, default=1,
-                           help='Penalty for mismatches in linker alignment (default: 1)')
-    run_parser.add_argument('--gap-open-penalty', type=int, default=1,
-                           help='Gap opening penalty in linker alignment (default: 1)')
-    run_parser.add_argument('--gap-extend-penalty', type=int, default=1,
-                           help='Gap extension penalty in linker alignment (default: 1)')
-    
-    # ChIA-PET/HiChIP parameters
-    run_parser.add_argument('--genome-size', default='hs', help='Genome size for MACS3 (default: hs)')
-    run_parser.add_argument('--mapping-quality', type=int, default=30, help='Min mapping quality (default: 30)')
-    run_parser.add_argument('--self-ligation-cutoff', type=int, default=8000,
-                           help='Self-ligation cutoff in bp (default: 8000)')
-    run_parser.add_argument('--extension-length', type=int, default=500,
-                           help='Tag extension length in bp (default: 500)')
-    run_parser.add_argument('--ipet-threshold', type=int, default=2,
-                           help='Min iPET count for loops (default: 2)')
-    run_parser.add_argument('--fdr-cutoff', type=float, default=0.05, help='FDR cutoff (default: 0.05)')
-    
-    # Hi-C parameters
-    run_parser.add_argument('--resolution', default='1000,5000,10000',
-                           help='Resolutions for Hi-C matrices (comma-separated, default: 1000,5000,10000)')
-    run_parser.add_argument('--assembly', default='hg38', help='Genome assembly name (default: hg38)')
-    run_parser.add_argument('--min-distance', type=int, default=1000,
-                           help='Minimum distance for Hi-C pairs (default: 1000)')
-    run_parser.add_argument('--sample-id', default='sample', help='Sample identifier (default: sample)')
-    
-    # Output control
-    run_parser.add_argument('--keep-intermediates', action='store_true',
-                           help='Keep intermediate files (SAM, unsorted BAM, etc.)')
-    run_parser.add_argument('--keep-sam', action='store_true', help='Keep SAM files')
-    run_parser.add_argument('--no-dedup', action='store_true', help='Skip PCR duplicate removal')
-    run_parser.add_argument('--resume', action='store_true',
-                           help='Resume from last completed step (skip steps with existing outputs)')
-    
-    run_parser.set_defaults(func=cmd_run)
-    
-    # =========================================================================
-    # generate-sites - Utility command for generating restriction sites
-    # =========================================================================
-    sites_parser = subparsers.add_parser('generate-sites', 
-                                         help='Generate restriction fragment sites from genome')
-    sites_parser.add_argument('--genome', required=True, help='Genome FASTA file')
-    sites_parser.add_argument('--enzyme', required=True, 
-                             help='Enzyme name (e.g., MboI, HindIII) or recognition site (e.g., GATC)')
-    sites_parser.add_argument('--output', required=True, help='Output BED file')
-    sites_parser.add_argument('--min-size', type=int, default=20, 
-                             help='Min fragment size (default: 20)')
-    sites_parser.add_argument('--max-size', type=int, default=1000000, 
-                             help='Max fragment size (default: 1000000)')
-    sites_parser.set_defaults(func=cmd_generate_sites)
-    
-    # Parse arguments
-    args = parser.parse_args()
-    
-    # Setup logging
-    setup_logging(args.verbose, args.log_file)
-    
-    # Run command
+
     if args.command is None:
         parser.print_help()
         return 1
-    
+
     return args.func(args)
 
 
 if __name__ == '__main__':
     sys.exit(main())
+
