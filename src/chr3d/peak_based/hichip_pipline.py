@@ -46,6 +46,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# Import system info utility
+from ..utils.system_info import save_system_info
+
 # Resolve the bin directory of the active Python / conda environment so that
 # child processes (multiprocessing) can find bwa and samtools on PATH.
 _ENV_BIN = str(Path(sys.executable).parent)
@@ -226,16 +229,22 @@ class HiChIPPipeline:
         """
         t_pipeline = time.time()
 
+        # Capture system configuration before pipeline starts
         out = Path(output_dir)
+        qc_dir = out / "qc"
+        qc_dir.mkdir(parents=True, exist_ok=True)
+        system_info_path = qc_dir / "system_configuration.txt"
+        save_system_info(str(system_info_path))
+        logger.info(f"System configuration saved to {system_info_path}")
+
         splits_dir     = out / "splits"
         aligned_dir    = out / "aligned"
         bedpe_dir      = out / "bedpe"
         purified_dir   = out / "purified"
         background_dir = out / "background"
-        qc_dir         = out / "qc"
 
         for d in [splits_dir, aligned_dir, bedpe_dir,
-                  purified_dir, background_dir, qc_dir]:
+                  purified_dir, background_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         logger.info("=" * 70)

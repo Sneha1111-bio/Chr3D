@@ -1,30 +1,10 @@
-"""
-ChIA-PET Pipeline Orchestrator
-
-Runs the full ChIA-PET analysis pipeline end-to-end:
-  1. Linker filtering   (LinkerFilter / parasail SIMD)
-  2. Mapping            (PETMapperV3 / BWA)
-  3. Peak calling       (PeakCaller / MACS3)
-  4. Background model   (classify → extract → phase1 → phase2 → FDR)
-
-Output layout:
-  <output-dir>/
-  ├── filtered/       linker-filtered FASTQ files + stats
-  ├── mapped/         BAM, BEDPE, dedup BEDPE + flagstat
-  ├── peaks/          MACS3 broadPeak / narrowPeak + summits
-  ├── loops/
-  │   ├── classified/ P2P / P2D / D2D PET files
-  │   ├── templates/  templates.csv, templates_with_nb.csv
-  │   └── results/    p-values CSV, FDR-corrected loops CSV
-  └── qc/             per-step stats + timing report
-"""
-
 import os
 import time
 from pathlib import Path
 from typing import Dict, Optional
 
 from ..utils.logging import get_logger
+from ..utils.system_info import save_system_info
 
 logger = get_logger(__name__)
 
@@ -136,7 +116,14 @@ class ChiaPetPipeline:
         """
         pipeline_start = time.time()
 
+        # Capture system configuration before pipeline starts
         out = Path(output_dir)
+        qc_dir = out / 'qc'
+        qc_dir.mkdir(parents=True, exist_ok=True)
+        system_info_path = qc_dir / 'system_configuration.txt'
+        save_system_info(str(system_info_path))
+        logger.info(f"System configuration saved to {system_info_path}")
+
         filtered_dir  = out / 'filtered'
         mapped_dir    = out / 'mapped'
         peaks_dir     = out / 'peaks'
@@ -144,10 +131,9 @@ class ChiaPetPipeline:
         classified_dir = loops_dir / 'classified'
         templates_dir  = loops_dir / 'templates'
         results_dir    = loops_dir / 'results'
-        qc_dir         = out / 'qc'
 
         for d in [filtered_dir, mapped_dir, peaks_dir,
-                  classified_dir, templates_dir, results_dir, qc_dir]:
+                  classified_dir, templates_dir, results_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         logger.info("=" * 70)

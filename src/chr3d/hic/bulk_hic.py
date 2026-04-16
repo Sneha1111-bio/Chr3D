@@ -36,6 +36,7 @@ from datetime import datetime
 
 # Use centralized logging
 from ..utils.logging import get_logger
+from ..utils.system_info import save_system_info
 
 # Get module logger
 logger = get_logger(__name__)
@@ -1380,11 +1381,8 @@ class HiCPipeline:
         
         # Save system configuration
         try:
-            from ..utils.system_info import get_system_info, format_system_info
-            system_info = get_system_info()
             system_info_file = os.path.join(qc_dir, f'{sample_id}_system_config.txt')
-            with open(system_info_file, 'w') as f:
-                f.write(format_system_info(system_info))
+            save_system_info(system_info_file)
             logger.info(f"System configuration saved to: {system_info_file}")
         except Exception as e:
             logger.warning(f"Could not save system info: {e}")
