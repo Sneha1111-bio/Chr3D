@@ -15,6 +15,7 @@
 """
 
 import logging
+import polars as pl
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -71,7 +72,7 @@ def calculate_pvalues(templates_file: str, output_file: str, significance_thresh
     logger.info(f"{'='*70}")
     logger.info(f"  File: {templates_file}")
 
-    templates = pd.read_csv(templates_file)
+    templates = pl.read_csv(templates_file, n_threads=0).to_pandas()
     logger.info(f"  Total templates: {len(templates):,}")
 
     # Initialize all p-values to 1.0 (default / non-significant)
@@ -164,7 +165,7 @@ def calculate_pvalues(templates_file: str, output_file: str, significance_thresh
     logger.info(f"{'='*70}")
     logger.info(f"  Output file: {output_file}")
     
-    templates.to_csv(output_file, index=False)
+    pl.from_pandas(templates).write_csv(output_file)
     
     file_size = Path(output_file).stat().st_size / 1024 / 1024
     logger.info(f"  File size: {file_size:.2f} MB")

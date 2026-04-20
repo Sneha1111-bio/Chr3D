@@ -203,24 +203,31 @@ class HiChIPPipeline:
 
     def run(
         self,
-        fastq_r1: str,
-        fastq_r2: str,
-        output_dir: str,
+        fastq_r1: Optional[str] = None,
+        fastq_r2: Optional[str] = None,
+        output_dir: str = "./results",
         sample_id: str = "sample",
+        start_from: int = 1,
     ) -> Dict:
         """
-        Run the full HiChIP pipeline.
+        Run the full HiChIP pipeline, or resume from a later step.
 
         Parameters
         ----------
-        fastq_r1 : str
-            Path to R1 FASTQ (gzipped or plain).
-        fastq_r2 : str
-            Path to R2 FASTQ (gzipped or plain).
+        fastq_r1 : str, optional
+            Path to R1 FASTQ (gzipped or plain). Required when ``start_from<=1``.
+        fastq_r2 : str, optional
+            Path to R2 FASTQ (gzipped or plain). Required when ``start_from<=1``.
         output_dir : str
             Root output directory (created if absent).
         sample_id : str
             Sample name used as file prefix.
+        start_from : int
+            Step to resume from:
+              1=split FASTQ, 2=align chunks, 3=merge BAMs,
+              4=BAM→BEDPE dedup, 5=MboI purification, 6=background model.
+            Default 1 runs the full pipeline. When resuming, the pre-computed
+            outputs from previous steps must exist under ``output_dir``.
 
         Returns
         -------
@@ -228,6 +235,14 @@ class HiChIPPipeline:
             Collected stats from every step + timing breakdown.
         """
         t_pipeline = time.time()
+        if start_from < 1 or start_from > 6:
+            raise ValueError(
+                f"start_from must be between 1 and 6 (got {start_from})"
+            )
+        if start_from == 1 and (not fastq_r1 or not fastq_r2):
+            raise ValueError(
+                "fastq_r1 and fastq_r2 are required when start_from=1"
+            )
 
         # Capture system configuration before pipeline starts
         out = Path(output_dir)
@@ -258,91 +273,124 @@ class HiChIPPipeline:
         logger.info(f"  Threads      : {self.threads}  ({self.n_chunks} chunks × {self.bwa_threads}t)")
         logger.info(f"  Min insert   : {self.min_insert_size} bp")
         logger.info(f"  Output dir   : {output_dir}")
+        logger.info(f"  Start from   : step {start_from}")
         logger.info("=" * 70)
 
         timing = {}
-        all_stats = {"sample_id": sample_id}
+        all_stats = {"sample_id": sample_id, "start_from": start_from}
+
+        merged_bam  = str(aligned_dir / f"{sample_id}.namesorted.bam")
+        dedup_bedpe = str(bedpe_dir / f"{sample_id}.dedup.bedpe")
+        kept_bedpe  = str(purified_dir / f"{sample_id}.filter.byres")
 
         # ── Step 1: Split FASTQ ────────────────────────────────────────
-        logger.info("\n[STEP 1] Splitting FASTQ...")
-        t0 = time.time()
-        chunks = self._split_fastq(fastq_r1, fastq_r2, str(splits_dir))
-        timing["split"] = time.time() - t0
-        all_stats["n_chunks"] = len(chunks)
-        logger.info(f"  {len(chunks)} chunks in {_fmt_time(timing['split'])}")
+        if start_from <= 1:
+            logger.info("\n[STEP 1] Splitting FASTQ...")
+            t0 = time.time()
+            chunks = self._split_fastq(fastq_r1, fastq_r2, str(splits_dir))
+            timing["split"] = time.time() - t0
+            all_stats["n_chunks"] = len(chunks)
+            logger.info(f"  {len(chunks)} chunks in {_fmt_time(timing['split'])}")
+        else:
+            logger.info("\n[STEP 1] SKIPPED (resume mode)")
+            chunks = []
 
         # ── Step 2: Parallel alignment ─────────────────────────────────
-        logger.info("\n[STEP 2] Parallel BWA MEM alignment...")
-        t0 = time.time()
-        chunk_bams = self._align_parallel(chunks, str(splits_dir))
-        timing["alignment"] = time.time() - t0
-        logger.info(f"  Done in {_fmt_time(timing['alignment'])}")
+        if start_from <= 2:
+            logger.info("\n[STEP 2] Parallel BWA MEM alignment...")
+            t0 = time.time()
+            chunk_bams = self._align_parallel(chunks, str(splits_dir))
+            timing["alignment"] = time.time() - t0
+            logger.info(f"  Done in {_fmt_time(timing['alignment'])}")
+        else:
+            logger.info("\n[STEP 2] SKIPPED (resume mode)")
+            chunk_bams = sorted(
+                str(p) for p in splits_dir.glob("chunk_*.namesorted.bam")
+            )
 
         # ── Step 3: Merge BAMs ─────────────────────────────────────────
-        logger.info("\n[STEP 3] Merging chunk BAMs...")
-        t0 = time.time()
-        merged_bam = str(aligned_dir / f"{sample_id}.namesorted.bam")
-        self._merge_bams(chunk_bams, merged_bam)
-        timing["merge"] = time.time() - t0
-        logger.info(f"  Merged BAM: {Path(merged_bam).stat().st_size / 1e6:.1f} MB"
-                    f"  in {_fmt_time(timing['merge'])}")
+        if start_from <= 3:
+            logger.info("\n[STEP 3] Merging chunk BAMs...")
+            t0 = time.time()
+            self._merge_bams(chunk_bams, merged_bam)
+            timing["merge"] = time.time() - t0
+            logger.info(f"  Merged BAM: {Path(merged_bam).stat().st_size / 1e6:.1f} MB"
+                        f"  in {_fmt_time(timing['merge'])}")
+        else:
+            logger.info("\n[STEP 3] SKIPPED (resume mode)")
+            if start_from <= 4 and not Path(merged_bam).exists():
+                raise FileNotFoundError(
+                    f"Cannot resume from step {start_from}: missing {merged_bam}"
+                )
 
         # ── Step 4: BAM → BEDPE + dedup ───────────────────────────────
-        logger.info("\n[STEP 4] BAM → BEDPE + deduplication...")
-        t0 = time.time()
-        dedup_bedpe = str(bedpe_dir / f"{sample_id}.dedup.bedpe")
-        bedpe_stats = self._bam_to_dedup_bedpe(merged_bam, dedup_bedpe)
-        timing["bedpe"] = time.time() - t0
-        all_stats["bedpe_stats"] = bedpe_stats
+        if start_from <= 4:
+            logger.info("\n[STEP 4] BAM → BEDPE + deduplication...")
+            t0 = time.time()
+            bedpe_stats = self._bam_to_dedup_bedpe(merged_bam, dedup_bedpe)
+            timing["bedpe"] = time.time() - t0
+            all_stats["bedpe_stats"] = bedpe_stats
 
-        bedpe_warns = _sanity_check_bedpe(
-            bedpe_stats["valid"], bedpe_stats["total"], bedpe_stats["unmapped"]
-        )
-        for w in bedpe_warns:
-            logger.warning(f"  {w}")
+            bedpe_warns = _sanity_check_bedpe(
+                bedpe_stats["valid"], bedpe_stats["total"], bedpe_stats["unmapped"]
+            )
+            for w in bedpe_warns:
+                logger.warning(f"  {w}")
 
-        logger.info(
-            f"  Read pairs : {bedpe_stats['total']:,}\n"
-            f"  Unmapped   : {bedpe_stats['unmapped']:,}  "
-            f"({100*bedpe_stats['unmapped']/max(bedpe_stats['total'],1):.1f}%)\n"
-            f"  Duplicates : {bedpe_stats['duplicates']:,}  "
-            f"({100*bedpe_stats['duplicates']/max(bedpe_stats['total'],1):.1f}%)\n"
-            f"  Valid PETs : {bedpe_stats['valid']:,}  "
-            f"({100*bedpe_stats['valid']/max(bedpe_stats['total'],1):.1f}%)\n"
-            f"  Done in {_fmt_time(timing['bedpe'])}"
-        )
+            logger.info(
+                f"  Read pairs : {bedpe_stats['total']:,}\n"
+                f"  Unmapped   : {bedpe_stats['unmapped']:,}  "
+                f"({100*bedpe_stats['unmapped']/max(bedpe_stats['total'],1):.1f}%)\n"
+                f"  Duplicates : {bedpe_stats['duplicates']:,}  "
+                f"({100*bedpe_stats['duplicates']/max(bedpe_stats['total'],1):.1f}%)\n"
+                f"  Valid PETs : {bedpe_stats['valid']:,}  "
+                f"({100*bedpe_stats['valid']/max(bedpe_stats['total'],1):.1f}%)\n"
+                f"  Done in {_fmt_time(timing['bedpe'])}"
+            )
+        else:
+            logger.info("\n[STEP 4] SKIPPED (resume mode)")
+            if start_from <= 5 and not Path(dedup_bedpe).exists():
+                raise FileNotFoundError(
+                    f"Cannot resume from step {start_from}: missing {dedup_bedpe}"
+                )
 
         # ── Step 5: MboI purification ──────────────────────────────────
-        logger.info("\n[STEP 5] MboI restriction fragment purification...")
-        t0 = time.time()
-        purify_stats = self._run_purification(
-            dedup_bedpe, str(purified_dir), sample_id
-        )
-        timing["purification"] = time.time() - t0
-        all_stats["purify_stats"] = purify_stats
+        if start_from <= 5:
+            logger.info("\n[STEP 5] MboI restriction fragment purification...")
+            t0 = time.time()
+            purify_stats = self._run_purification(
+                dedup_bedpe, str(purified_dir), sample_id
+            )
+            timing["purification"] = time.time() - t0
+            all_stats["purify_stats"] = purify_stats
 
-        purify_warns = _sanity_check_purification(purify_stats, sample_id)
-        for w in purify_warns:
-            logger.warning(f"  {w}")
+            purify_warns = _sanity_check_purification(purify_stats, sample_id)
+            for w in purify_warns:
+                logger.warning(f"  {w}")
 
-        total = purify_stats["total"]
-        logger.info(
-            f"  Total PETs    : {total:,}\n"
-            f"  Kept          : {purify_stats['kept']:,}  "
-            f"({100*purify_stats['kept']/max(total,1):.1f}%)\n"
-            f"  Same fragment : {purify_stats['removed_same_fragment']:,}  "
-            f"({100*purify_stats['removed_same_fragment']/max(total,1):.1f}%)\n"
-            f"  Unmappable    : {purify_stats['removed_unmappable']:,}  "
-            f"({100*purify_stats['removed_unmappable']/max(total,1):.1f}%)\n"
-            f"  Short insert  : {purify_stats['removed_short_insert']:,}  "
-            f"({100*purify_stats['removed_short_insert']/max(total,1):.1f}%)\n"
-            f"  Done in {_fmt_time(timing['purification'])}"
-        )
+            total = purify_stats["total"]
+            logger.info(
+                f"  Total PETs    : {total:,}\n"
+                f"  Kept          : {purify_stats['kept']:,}  "
+                f"({100*purify_stats['kept']/max(total,1):.1f}%)\n"
+                f"  Same fragment : {purify_stats['removed_same_fragment']:,}  "
+                f"({100*purify_stats['removed_same_fragment']/max(total,1):.1f}%)\n"
+                f"  Unmappable    : {purify_stats['removed_unmappable']:,}  "
+                f"({100*purify_stats['removed_unmappable']/max(total,1):.1f}%)\n"
+                f"  Short insert  : {purify_stats['removed_short_insert']:,}  "
+                f"({100*purify_stats['removed_short_insert']/max(total,1):.1f}%)\n"
+                f"  Done in {_fmt_time(timing['purification'])}"
+            )
+        else:
+            logger.info("\n[STEP 5] SKIPPED (resume mode)")
+            if not Path(kept_bedpe).exists():
+                raise FileNotFoundError(
+                    f"Cannot resume from step {start_from}: missing {kept_bedpe}"
+                )
 
         # ── Step 6: Background model ───────────────────────────────────
         logger.info("\n[STEP 6] Generating background model...")
         t0 = time.time()
-        kept_bedpe = str(purified_dir / f"{sample_id}.filter.byres")
         bg_stats = self._run_background_model(
             kept_bedpe, str(background_dir), sample_id
         )
@@ -355,7 +403,7 @@ class HiChIPPipeline:
         )
 
         # ── Cleanup intermediates ──────────────────────────────────────
-        if not self.keep_intermediates:
+        if not self.keep_intermediates and start_from <= 2:
             self._cleanup_splits(str(splits_dir))
 
         # ── QC report ─────────────────────────────────────────────────

@@ -1296,26 +1296,33 @@ class HiCPipeline:
         }
     
     def run(self,
-            fastq1: str,
-            fastq2: str,
-            output_dir: str,
+            fastq1: Optional[str] = None,
+            fastq2: Optional[str] = None,
+            output_dir: str = './results',
             sample_id: str = 'sample',
-            cleanup: bool = False) -> Dict[str, Any]:
+            cleanup: bool = False,
+            start_from: int = 1) -> Dict[str, Any]:
         """
-        Run the complete Hi-C pipeline.
+        Run the complete Hi-C pipeline, or resume from a later step.
         
         Executes all steps in order:
         1. Alignment (BWA MEM)
         2. SAM/BAM processing
         3. Pairs processing (pairtools)
         4. Contact matrix generation (cooler)
+        5. TAD calling (optional)
+        6. Loop calling (optional)
+        7. A/B compartment calling (optional)
         
         Args:
-            fastq1: Path to R1 FASTQ file
-            fastq2: Path to R2 FASTQ file
+            fastq1: Path to R1 FASTQ file (required when start_from<=1)
+            fastq2: Path to R2 FASTQ file (required when start_from<=1)
             output_dir: Output directory
             sample_id: Sample identifier (default: 'sample')
             cleanup: Remove intermediate files (default: False)
+            start_from: Step to resume from (1-7). Default 1 runs the full pipeline.
+                When resuming, the expected inputs from prior steps must exist
+                at their canonical paths under ``output_dir``.
             
         Returns:
             Dictionary with all pipeline statistics
@@ -1357,7 +1364,13 @@ class HiCPipeline:
             - All QC stats files
         """
         pipeline_start_time = time.time()
-        
+
+        # Validate start_from
+        if start_from < 1 or start_from > 7:
+            raise ValueError(f"start_from must be between 1 and 7 (got {start_from})")
+        if start_from == 1 and (not fastq1 or not fastq2):
+            raise ValueError("fastq1 and fastq2 are required when start_from=1")
+
         logger.info("=" * 70)
         logger.info("BULK Hi-C PIPELINE")
         logger.info("=" * 70)
@@ -1366,13 +1379,15 @@ class HiCPipeline:
         logger.info(f"FASTQ R2: {fastq2}")
         logger.info(f"Output: {output_dir}")
         logger.info(f"Threads: {self.threads}")
+        logger.info(f"Start from: step {start_from}")
         logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Validate FASTQ files
-        if not os.path.exists(fastq1):
-            raise ValueError(f"FASTQ R1 not found: {fastq1}")
-        if not os.path.exists(fastq2):
-            raise ValueError(f"FASTQ R2 not found: {fastq2}")
+        # Validate FASTQ files (only when running step 1)
+        if start_from <= 1:
+            if not os.path.exists(fastq1):
+                raise ValueError(f"FASTQ R1 not found: {fastq1}")
+            if not os.path.exists(fastq2):
+                raise ValueError(f"FASTQ R2 not found: {fastq2}")
         
         # Create output directory and QC directory
         os.makedirs(output_dir, exist_ok=True)
@@ -1399,52 +1414,95 @@ class HiCPipeline:
             'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
         
+        # Canonical resume paths
+        expected_sam   = os.path.join(output_dir, 'aligned',  f'{sample_id}.sam')
+        expected_bam   = os.path.join(output_dir, 'processed', f'{sample_id}_sorted.bam')
+        expected_pairs = os.path.join(output_dir, 'pairs',    f'{sample_id}.filtered.pairs.gz')
+        expected_mcool = os.path.join(output_dir, 'matrices', f'{sample_id}.mcool')
+        expected_cool  = os.path.join(output_dir, 'matrices', f'{sample_id}.cool')
+
         # Step 1: Alignment
-        step1_start = time.time()
-        align_stats = self.align(fastq1, fastq2, output_dir, sample_id)
-        step1_duration = time.time() - step1_start
-        timing['step1_alignment'] = step1_duration
-        align_stats['duration_seconds'] = step1_duration
-        align_stats['duration_formatted'] = _format_duration(step1_duration)
-        all_stats['alignment'] = align_stats
-        logger.info(f"  Step 1 completed in: {_format_duration(step1_duration)}")
-        
+        if start_from <= 1:
+            step1_start = time.time()
+            align_stats = self.align(fastq1, fastq2, output_dir, sample_id)
+            step1_duration = time.time() - step1_start
+            timing['step1_alignment'] = step1_duration
+            align_stats['duration_seconds'] = step1_duration
+            align_stats['duration_formatted'] = _format_duration(step1_duration)
+            all_stats['alignment'] = align_stats
+            logger.info(f"  Step 1 completed in: {_format_duration(step1_duration)}")
+        else:
+            logger.info("  Step 1 (alignment) SKIPPED — resume mode")
+            align_stats = {'output_sam': expected_sam, 'resumed': True}
+            all_stats['alignment'] = align_stats
+
         # Step 2: SAM/BAM processing
-        step2_start = time.time()
-        sam_stats = self.process_sam(align_stats['output_sam'], output_dir, sample_id)
-        step2_duration = time.time() - step2_start
-        timing['step2_sam_processing'] = step2_duration
-        sam_stats['duration_seconds'] = step2_duration
-        sam_stats['duration_formatted'] = _format_duration(step2_duration)
-        all_stats['sam_processing'] = sam_stats
-        logger.info(f"  Step 2 completed in: {_format_duration(step2_duration)}")
-        
+        if start_from <= 2:
+            if not os.path.exists(align_stats['output_sam']):
+                raise FileNotFoundError(
+                    f"Cannot run step 2: SAM not found at {align_stats['output_sam']}"
+                )
+            step2_start = time.time()
+            sam_stats = self.process_sam(align_stats['output_sam'], output_dir, sample_id)
+            step2_duration = time.time() - step2_start
+            timing['step2_sam_processing'] = step2_duration
+            sam_stats['duration_seconds'] = step2_duration
+            sam_stats['duration_formatted'] = _format_duration(step2_duration)
+            all_stats['sam_processing'] = sam_stats
+            logger.info(f"  Step 2 completed in: {_format_duration(step2_duration)}")
+        else:
+            logger.info("  Step 2 (SAM→BAM) SKIPPED — resume mode")
+            sam_stats = {'sorted_bam': expected_bam, 'resumed': True}
+            all_stats['sam_processing'] = sam_stats
+
         # Step 3: Pairs processing
-        step3_start = time.time()
-        pairs_stats = self.process_pairs(sam_stats['sorted_bam'], output_dir, sample_id)
-        step3_duration = time.time() - step3_start
-        timing['step3_pairs_processing'] = step3_duration
-        pairs_stats['duration_seconds'] = step3_duration
-        pairs_stats['duration_formatted'] = _format_duration(step3_duration)
-        all_stats['pairs_processing'] = pairs_stats
-        logger.info(f"  Step 3 completed in: {_format_duration(step3_duration)}")
-        
+        if start_from <= 3:
+            if not os.path.exists(sam_stats['sorted_bam']):
+                raise FileNotFoundError(
+                    f"Cannot run step 3: sorted BAM not found at {sam_stats['sorted_bam']}"
+                )
+            step3_start = time.time()
+            pairs_stats = self.process_pairs(sam_stats['sorted_bam'], output_dir, sample_id)
+            step3_duration = time.time() - step3_start
+            timing['step3_pairs_processing'] = step3_duration
+            pairs_stats['duration_seconds'] = step3_duration
+            pairs_stats['duration_formatted'] = _format_duration(step3_duration)
+            all_stats['pairs_processing'] = pairs_stats
+            logger.info(f"  Step 3 completed in: {_format_duration(step3_duration)}")
+        else:
+            logger.info("  Step 3 (pairs) SKIPPED — resume mode")
+            pairs_stats = {'filtered_pairs': expected_pairs, 'resumed': True}
+            all_stats['pairs_processing'] = pairs_stats
+
         # Step 4: Contact matrix
-        step4_start = time.time()
-        matrix_stats = self.create_contact_matrix(
-            pairs_stats['filtered_pairs'], output_dir, sample_id
-        )
-        step4_duration = time.time() - step4_start
-        timing['step4_contact_matrix'] = step4_duration
-        matrix_stats['duration_seconds'] = step4_duration
-        matrix_stats['duration_formatted'] = _format_duration(step4_duration)
-        all_stats['contact_matrix'] = matrix_stats
-        logger.info(f"  Step 4 completed in: {_format_duration(step4_duration)}")
+        if start_from <= 4:
+            if not os.path.exists(pairs_stats['filtered_pairs']):
+                raise FileNotFoundError(
+                    f"Cannot run step 4: filtered pairs not found at {pairs_stats['filtered_pairs']}"
+                )
+            step4_start = time.time()
+            matrix_stats = self.create_contact_matrix(
+                pairs_stats['filtered_pairs'], output_dir, sample_id
+            )
+            step4_duration = time.time() - step4_start
+            timing['step4_contact_matrix'] = step4_duration
+            matrix_stats['duration_seconds'] = step4_duration
+            matrix_stats['duration_formatted'] = _format_duration(step4_duration)
+            all_stats['contact_matrix'] = matrix_stats
+            logger.info(f"  Step 4 completed in: {_format_duration(step4_duration)}")
+        else:
+            logger.info("  Step 4 (matrix) SKIPPED — resume mode")
+            matrix_stats = {
+                'cool_file':  expected_cool,
+                'mcool_file': expected_mcool,
+                'resumed': True,
+            }
+            all_stats['contact_matrix'] = matrix_stats
 
         # Step 5: TAD calling
         mcool_file = matrix_stats.get('mcool_file', '')
         tad_stats = {}
-        if self.call_tads and mcool_file and os.path.exists(mcool_file):
+        if start_from <= 5 and self.call_tads and mcool_file and os.path.exists(mcool_file):
             step5_start = time.time()
             try:
                 from .tads import HiCTADCaller
@@ -1473,7 +1531,7 @@ class HiCPipeline:
 
         # Step 6: Loop calling
         loop_stats = {}
-        if self.call_loops and mcool_file and os.path.exists(mcool_file):
+        if start_from <= 6 and self.call_loops and mcool_file and os.path.exists(mcool_file):
             step6_start = time.time()
             try:
                 from .loop_calling import HiCLoopCaller
@@ -1502,7 +1560,7 @@ class HiCPipeline:
 
         # Step 7: A/B Compartment calling
         compartment_stats = {}
-        if self.call_compartments and mcool_file and os.path.exists(mcool_file):
+        if start_from <= 7 and self.call_compartments and mcool_file and os.path.exists(mcool_file):
             step7_start = time.time()
             try:
                 from .tads import HiCCompartmentCaller
@@ -1580,10 +1638,10 @@ class HiCPipeline:
             f.write("\n" + "-" * 70 + "\n")
             f.write("STEP TIMING\n")
             f.write("-" * 70 + "\n")
-            f.write(f"Step 1 - BWA MEM Alignment:    {_format_duration(timing['step1_alignment']):>25}\n")
-            f.write(f"Step 2 - SAM/BAM Processing:   {_format_duration(timing['step2_sam_processing']):>25}\n")
-            f.write(f"Step 3 - Pairs Processing:     {_format_duration(timing['step3_pairs_processing']):>25}\n")
-            f.write(f"Step 4 - Contact Matrix:       {_format_duration(timing['step4_contact_matrix']):>25}\n")
+            f.write(f"Step 1 - BWA MEM Alignment:    {_format_duration(timing.get('step1_alignment', 0)):>25}\n")
+            f.write(f"Step 2 - SAM/BAM Processing:   {_format_duration(timing.get('step2_sam_processing', 0)):>25}\n")
+            f.write(f"Step 3 - Pairs Processing:     {_format_duration(timing.get('step3_pairs_processing', 0)):>25}\n")
+            f.write(f"Step 4 - Contact Matrix:       {_format_duration(timing.get('step4_contact_matrix', 0)):>25}\n")
             if 'step5_tad_calling' in timing:
                 f.write(f"Step 5 - TAD Calling:          {_format_duration(timing['step5_tad_calling']):>25}\n")
             if 'step6_loop_calling' in timing:
@@ -1603,10 +1661,10 @@ class HiCPipeline:
         logger.info(f"End time: {all_stats['end_time']}")
         
         logger.info(f"\nTiming Summary:")
-        logger.info(f"  Step 1 (Alignment):      {_format_duration(timing['step1_alignment'])}")
-        logger.info(f"  Step 2 (SAM/BAM):        {_format_duration(timing['step2_sam_processing'])}")
-        logger.info(f"  Step 3 (Pairs):          {_format_duration(timing['step3_pairs_processing'])}")
-        logger.info(f"  Step 4 (Contact Matrix): {_format_duration(timing['step4_contact_matrix'])}")
+        logger.info(f"  Step 1 (Alignment):      {_format_duration(timing.get('step1_alignment', 0))}")
+        logger.info(f"  Step 2 (SAM/BAM):        {_format_duration(timing.get('step2_sam_processing', 0))}")
+        logger.info(f"  Step 3 (Pairs):          {_format_duration(timing.get('step3_pairs_processing', 0))}")
+        logger.info(f"  Step 4 (Contact Matrix): {_format_duration(timing.get('step4_contact_matrix', 0))}")
         logger.info(f"  TOTAL:                   {_format_duration(timing['total'])}")
         
         logger.info(f"\nFinal output files (always kept):")

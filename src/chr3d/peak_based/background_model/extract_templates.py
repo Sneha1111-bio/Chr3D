@@ -13,7 +13,7 @@
 """
 
 import logging
-import pandas as pd
+import polars as pl
 import numpy as np
 import argparse
 from pathlib import Path
@@ -34,22 +34,18 @@ def load_cytoband_regions(cytoband_file: str, buffer_size: int = 5_000_000):
     
     problematic_regions = {}
     
-    # Load cytoband file
-    cyto = pd.read_csv(cytoband_file, sep='\t', header=None,
-                       names=['chrom', 'start', 'end', 'band', 'stain'])
+    # Load cytoband file with Polars
+    cyto = pl.read_csv(cytoband_file, separator='\t', has_header=False,
+                       new_columns=['chrom', 'start', 'end', 'band', 'stain'])
     
-    for chrom, group in cyto.groupby('chrom'):
-        regions = []
-        
-        # Add centromere regions with buffer
-        centromere = group[group['stain'] == 'acen']
-        if not centromere.empty:
-            regions.append((
+    for chrom in cyto['chrom'].unique().to_list():
+        group = cyto.filter(pl.col('chrom') == chrom)
+        centromere = group.filter(pl.col('stain') == 'acen')
+        if len(centromere) > 0:
+            regions = [(
                 max(0, centromere['start'].min() - buffer_size),
                 centromere['end'].max() + buffer_size
-            ))
-        
-        if regions:
+            )]
             problematic_regions[chrom] = regions
     
     logger.info(f"  Loaded problematic regions for {len(problematic_regions)} chromosomes")
@@ -97,63 +93,83 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
     if cytoband_file:
         logger.info(f"Filtering: Excluding problematic regions (centromeres)")
     
-    # Load peak file to get actual peak widths
+    # Load peak file to get actual peak widths.
+    # Handle both broadPeak (9 cols) and narrowPeak (10 cols) by reading the
+    # first 9 columns — avoids column misalignment.
     logger.info(f"\nLoading peaks from: {peak_file}")
-    peaks_df = pd.read_csv(peak_file, sep='\t', header=None,
-                          names=['chr', 'start', 'end', 'name', 'score', 'strand',
-                                'signalValue', 'pValue', 'qValue'])
+    peaks_pl = pl.read_csv(
+        peak_file, separator='\t', has_header=False,
+        new_columns=['chr', 'start', 'end', 'name', 'score', 'strand',
+                     'signalValue', 'pValue', 'qValue'],
+        columns=list(range(9)),
+        n_threads=0
+    )
 
-    # Vectorized lookup dicts built in one pass (no iterrows)
-    peak_widths    = dict(zip(peaks_df['name'], peaks_df['end'] - peaks_df['start']))
-    peak_midpoints = dict(zip(peaks_df['name'], (peaks_df['start'] + peaks_df['end']) / 2))
+    # Vectorized lookup dicts built via Polars (no iterrows)
+    peak_widths    = dict(zip(
+        peaks_pl['name'].to_list(),
+        (peaks_pl['end'] - peaks_pl['start']).to_list()
+    ))
+    peak_midpoints = dict(zip(
+        peaks_pl['name'].to_list(),
+        ((peaks_pl['start'] + peaks_pl['end']) / 2).to_list()
+    ))
 
-    logger.info(f"  Loaded {len(peaks_df):,} peaks")
-    logger.info(f"  Peak width range: {peaks_df['end'].sub(peaks_df['start']).min()}-{peaks_df['end'].sub(peaks_df['start']).max()} bp")
+    widths_arr = (peaks_pl['end'] - peaks_pl['start'])
+    logger.info(f"  Loaded {len(peaks_pl):,} peaks")
+    logger.info(f"  Peak width range: {widths_arr.min()}-{widths_arr.max()} bp")
     
-    # Load P2P PETs with peak information
+    # Load P2P PETs with peak information using Polars (fast multi-threaded I/O)
     logger.info(f"\nLoading P2P PETs from: {p2p_file}")
-    p2p_df = pd.read_csv(p2p_file, sep='\t', low_memory=False)
+    p2p_pl = pl.read_csv(p2p_file, separator='\t', n_threads=0, infer_schema_length=10000)
     
-    logger.info(f"  Total P2P PETs: {len(p2p_df):,}")
-    logger.info(f"  Columns: {list(p2p_df.columns)}")
+    logger.info(f"  Total P2P PETs: {len(p2p_pl):,}")
+    logger.info(f"  Columns: {p2p_pl.columns}")
     
     # Filter out PETs without peak information
-    p2p_with_peaks = p2p_df[
-        p2p_df['peak1_index'].notna() & 
-        p2p_df['peak2_index'].notna()
-    ].copy()
+    p2p_with_peaks = p2p_pl.filter(
+        pl.col('peak1_index').is_not_null() &
+        pl.col('peak2_index').is_not_null()
+    )
     
     logger.info(f"  P2P PETs with peak info: {len(p2p_with_peaks):,}")
     
-    # Group by peak pairs to create templates
+    # Group by peak pairs to create templates using Polars groupby
     logger.info("\nCreating templates by grouping peak pairs...")
-    
-    # Group by peak1_index, peak2_index, and type — vectorized aggregation
-    grouped = p2p_with_peaks.groupby(['peak1_index', 'peak2_index', 'type'], sort=False)
-    logger.info(f"  Total unique peak pairs: {len(grouped):,}")
 
-    # Aggregate in one shot using vectorized groupby operations
-    agg = grouped.agg(
-        peak1_id=('peak1_id', 'first'),
-        peak2_id=('peak2_id', 'first'),
-        chrom1=('chr1', 'first'),
-        chrom2=('chr2', 'first'),
-        PET_Count=('chr1', 'size')
-    ).reset_index()
+    agg = (
+        p2p_with_peaks
+        .group_by(['peak1_index', 'peak2_index', 'type'])
+        .agg([
+            pl.col('peak1_id').first(),
+            pl.col('peak2_id').first(),
+            pl.col('chr1').first().alias('chrom1'),
+            pl.col('chr2').first().alias('chrom2'),
+            pl.len().alias('PET_Count'),
+        ])
+    )
+    logger.info(f"  Total unique peak pairs: {len(agg):,}")
 
-    # Vectorized width lookup via map (much faster than per-row get)
-    agg['Width1'] = agg['peak1_id'].map(peak_widths).fillna(1).astype(int)
-    agg['Width2'] = agg['peak2_id'].map(peak_widths).fillna(1).astype(int)
+    # Vectorized width + distance lookup via Polars map_elements
+    agg = agg.with_columns([
+        pl.col('peak1_id').map_elements(lambda x: peak_widths.get(x, 1), return_dtype=pl.Int64).alias('Width1'),
+        pl.col('peak2_id').map_elements(lambda x: peak_widths.get(x, 1), return_dtype=pl.Int64).alias('Width2'),
+        pl.col('peak1_id').map_elements(lambda x: peak_midpoints.get(x, 0.0), return_dtype=pl.Float64).alias('mid1'),
+        pl.col('peak2_id').map_elements(lambda x: peak_midpoints.get(x, 0.0), return_dtype=pl.Float64).alias('mid2'),
+    ])
 
-    # Vectorized distance calculation
-    mid1_series = agg['peak1_id'].map(peak_midpoints).fillna(0)
-    mid2_series = agg['peak2_id'].map(peak_midpoints).fillna(0)
-    cis_mask    = (agg['chrom1'] == agg['chrom2']) & (agg['type'] == 'cross_peak')
-    agg['Distance'] = 0
-    agg.loc[cis_mask, 'Distance'] = (mid2_series[cis_mask] - mid1_series[cis_mask]).abs().astype(int)
+    # Distance: only for cis cross-peak interactions
+    agg = agg.with_columns([
+        pl.when(
+            (pl.col('chrom1') == pl.col('chrom2')) & (pl.col('type') == 'cross_peak')
+        )
+        .then((pl.col('mid2') - pl.col('mid1')).abs().cast(pl.Int64))
+        .otherwise(pl.lit(0, dtype=pl.Int64))
+        .alias('Distance')
+    ])
 
-    # Rename and reorder columns to match original schema
-    agg = agg.rename(columns={
+    # Rename and reorder
+    agg = agg.rename({
         'peak1_index': 'Peak1_Index',
         'peak2_index': 'Peak2_Index',
         'peak1_id':    'Peak1_ID',
@@ -162,39 +178,45 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
         'chrom1':      'Chrom1',
         'chrom2':      'Chrom2',
     })
-    agg['template_idx'] = range(1, len(agg) + 1)
+    agg = agg.with_columns(pl.Series('template_idx', range(1, len(agg) + 1)))
 
-    template_df = agg[['template_idx', 'Peak1_Index', 'Peak1_ID', 'Peak2_Index', 'Peak2_ID',
-                        'Type', 'Chrom1', 'Chrom2', 'Width1', 'Width2', 'Distance', 'PET_Count']].copy()
+    template_df = agg.select([
+        'template_idx', 'Peak1_Index', 'Peak1_ID', 'Peak2_Index', 'Peak2_ID',
+        'Type', 'Chrom1', 'Chrom2', 'Width1', 'Width2', 'Distance', 'PET_Count'
+    ])
     logger.info(f"\nCreating templates DataFrame...")
     
     # Filter to cis-interactions only (exclude trans-interactions)
     logger.info(f"\nFiltering to cis-interactions only (same chromosome)...")
     logger.info(f"  Before filtering: {len(template_df):,} templates")
-    cis_count = (template_df['Chrom1'] == template_df['Chrom2']).sum()
-    trans_count = (template_df['Chrom1'] != template_df['Chrom2']).sum()
+    cis_count   = int((template_df['Chrom1'] == template_df['Chrom2']).sum())
+    trans_count = int((template_df['Chrom1'] != template_df['Chrom2']).sum())
     logger.info(f"    Cis templates: {cis_count:,}")
     logger.info(f"    Trans templates: {trans_count:,} (will be excluded)")
     
-    template_df = template_df[template_df['Chrom1'] == template_df['Chrom2']].copy()
-    template_df['template_idx'] = range(1, len(template_df) + 1)
+    template_df = template_df.filter(pl.col('Chrom1') == pl.col('Chrom2'))
+    template_df = template_df.with_columns(pl.Series('template_idx', range(1, len(template_df) + 1)))
     logger.info(f"  After filtering: {len(template_df):,} templates (cis-only)")
     
     # Apply distance clipping at 30K
     logger.info(f"\nApplying distance clipping (max 30,000 bp)...")
     max_distance = 30000
-    template_df['Original_Distance'] = template_df['Distance'].copy()
-    template_df['Distance_Clipped'] = template_df['Distance'] > max_distance
+    template_df = template_df.with_columns([
+        pl.col('Distance').alias('Original_Distance'),
+        (pl.col('Distance') > max_distance).alias('Distance_Clipped'),
+    ])
     
-    clipped_count = template_df['Distance_Clipped'].sum()
+    clipped_count = int(template_df['Distance_Clipped'].sum())
     total_td = len(template_df) or 1
     logger.info(f"  Templates with distance > {max_distance:,} bp: {clipped_count:,} ({clipped_count/total_td*100:.1f}%)")
     
     if clipped_count > 0:
         logger.info(f"  Distance range before clipping: {template_df['Original_Distance'].min():.0f} - {template_df['Original_Distance'].max():.0f} bp")
-        template_df['Distance'] = template_df['Distance'].clip(upper=max_distance)
+        template_df = template_df.with_columns(
+            pl.col('Distance').clip(upper_bound=max_distance)
+        )
         logger.info(f"  Distance range after clipping: {template_df['Distance'].min():.0f} - {template_df['Distance'].max():.0f} bp")
-        logger.info(f"  ✅ Distance clipped to max {max_distance:,} bp")
+        logger.info(f"  Distance clipped to max {max_distance:,} bp")
     else:
         logger.info(f"  No templates required clipping")
     
@@ -203,12 +225,12 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
     logger.info(f"TEMPLATE SUMMARY")
     logger.info(f"{'='*70}")
     logger.info(f"  Total templates: {len(template_df):,}")
-    logger.info(f"  Same-peak templates: {(template_df['Type'] == 'same_peak').sum():,}")
-    logger.info(f"  Cross-peak templates: {(template_df['Type'] == 'cross_peak').sum():,}")
-    logger.info(f"  Total PETs represented: {template_df['PET_Count'].sum():,}")
+    logger.info(f"  Same-peak templates: {int((template_df['Type'] == 'same_peak').sum()):,}")
+    logger.info(f"  Cross-peak templates: {int((template_df['Type'] == 'cross_peak').sum()):,}")
+    logger.info(f"  Total PETs represented: {int(template_df['PET_Count'].sum()):,}")
     logger.info(f"  Average PETs per template: {template_df['PET_Count'].mean():.1f}")
     logger.info(f"  Median PETs per template: {template_df['PET_Count'].median():.0f}")
-    logger.info(f"  Max PETs in a template: {template_df['PET_Count'].max():,}")
+    logger.info(f"  Max PETs in a template: {int(template_df['PET_Count'].max()):,}")
     
     # Width and distance statistics
     logger.info(f"\nTemplate Parameter Statistics:")
@@ -222,50 +244,48 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
     # Filter to standard chromosomes
     if standard_chroms_only:
         before = len(template_df)
-        template_df = template_df[
-            template_df['Chrom1'].isin(STANDARD_CHROMS) & 
-            template_df['Chrom2'].isin(STANDARD_CHROMS)
-        ].copy()
+        template_df = template_df.filter(
+            pl.col('Chrom1').is_in(list(STANDARD_CHROMS)) &
+            pl.col('Chrom2').is_in(list(STANDARD_CHROMS))
+        )
         logger.info(f"\nFiltered to standard chromosomes: {before:,} → {len(template_df):,}")
     
-    # Filter problematic regions
+    # Filter problematic regions using vectorised Polars expressions
     if problematic_regions:
         before = len(template_df)
-        # peak_midpoints already built above (int version)
-        peak_midpoints_int = dict(zip(peaks_df['name'],
-                                      ((peaks_df['start'] + peaks_df['end']) // 2).astype(int)))
+        peak_midpoints_int = dict(zip(
+            peaks_pl['name'].to_list(),
+            ((peaks_pl['start'] + peaks_pl['end']) // 2).to_list()
+        ))
 
-        # Vectorized filter: check each peak mid against problematic regions
-        def _is_bad(chrom_series, peak_id_series):
-            mids = peak_id_series.map(peak_midpoints_int).fillna(0).astype(int)
-            bad  = np.zeros(len(chrom_series), dtype=bool)
-            for chrom, regions in problematic_regions.items():
-                chrom_mask = chrom_series.values == chrom
-                if not chrom_mask.any():
-                    continue
-                for rs, re in regions:
-                    in_region = (mids.values >= rs) & (mids.values <= re)
-                    bad |= (chrom_mask & in_region)
-            return bad
+        template_df = template_df.with_columns([
+            pl.col('Peak1_ID').map_elements(lambda x: peak_midpoints_int.get(x, 0), return_dtype=pl.Int64).alias('_mid1'),
+            pl.col('Peak2_ID').map_elements(lambda x: peak_midpoints_int.get(x, 0), return_dtype=pl.Int64).alias('_mid2'),
+        ])
 
-        bad1 = _is_bad(template_df['Chrom1'], template_df['Peak1_ID'])
-        bad2 = _is_bad(template_df['Chrom2'], template_df['Peak2_ID'])
-        template_df = template_df[~(bad1 | bad2)].copy()
+        keep_mask = pl.lit(True)
+        for chrom, regions in problematic_regions.items():
+            for rs, re in regions:
+                bad1 = (pl.col('Chrom1') == chrom) & (pl.col('_mid1') >= rs) & (pl.col('_mid1') <= re)
+                bad2 = (pl.col('Chrom2') == chrom) & (pl.col('_mid2') >= rs) & (pl.col('_mid2') <= re)
+                keep_mask = keep_mask & (~bad1) & (~bad2)
+
+        template_df = template_df.filter(keep_mask).drop(['_mid1', '_mid2'])
         logger.info(f"Filtered problematic regions: {before:,} → {len(template_df):,}")
     
     # Re-index templates after filtering
     if len(template_df) < original_count:
-        template_df['template_idx'] = range(1, len(template_df) + 1)
+        template_df = template_df.with_columns(pl.Series('template_idx', range(1, len(template_df) + 1)))
         logger.info(f"\nTotal templates after filtering: {len(template_df):,} (reduced from {original_count:,})")
     
-    # Save to CSV
+    # Save to CSV using Polars (multi-threaded write)
     logger.info(f"\nSaving templates to: {output_file}")
-    template_df.to_csv(output_file, index=False)
+    template_df.write_csv(output_file)
     logger.info(f"  File size: {Path(output_file).stat().st_size / 1024 / 1024:.2f} MB")
     
     # Show sample templates
     logger.info(f"\nSample Templates (first 5):")
-    for idx, row in template_df.head(5).iterrows():
+    for row in template_df.head(5).iter_rows(named=True):
         logger.info(f"  Template {row['template_idx']}:")
         logger.info(f"    Peaks: {row['Peak1_Index']} ({row['Peak1_ID']}) <-> {row['Peak2_Index']} ({row['Peak2_ID']})")
         logger.info(f"    Type: {row['Type']}, PETs: {row['PET_Count']}")
@@ -275,7 +295,7 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
     logger.info(f"TEMPLATE EXTRACTION COMPLETE!")
     logger.info(f"{'='*70}")
     
-    return template_df
+    return template_df.to_pandas()
 
 
 def main():

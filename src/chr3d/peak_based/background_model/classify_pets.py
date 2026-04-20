@@ -140,7 +140,7 @@
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
-import pandas as pd
+import polars as pl
 import numpy as np
 from pathlib import Path
 import logging
@@ -165,22 +165,18 @@ def load_cytoband_regions(cytoband_file: str, buffer_size: int = 5_000_000):
     
     problematic_regions = {}
     
-    # Load cytoband file
-    cyto = pd.read_csv(cytoband_file, sep='\t', header=None,
-                       names=['chrom', 'start', 'end', 'band', 'stain'])
+    # Load cytoband file with Polars
+    cyto = pl.read_csv(cytoband_file, separator='\t', has_header=False,
+                       new_columns=['chrom', 'start', 'end', 'band', 'stain'])
     
-    for chrom, group in cyto.groupby('chrom'):
-        regions = []
-        
-        # Add centromere regions with buffer
-        centromere = group[group['stain'] == 'acen']
-        if not centromere.empty:
-            regions.append((
+    for chrom in cyto['chrom'].unique().to_list():
+        group = cyto.filter(pl.col('chrom') == chrom)
+        centromere = group.filter(pl.col('stain') == 'acen')
+        if len(centromere) > 0:
+            regions = [(
                 max(0, centromere['start'].min() - buffer_size),
                 centromere['end'].max() + buffer_size
-            ))
-        
-        if regions:
+            )]
             problematic_regions[chrom] = regions
     
     logger.info(f"  Loaded problematic regions for {len(problematic_regions)} chromosomes")
@@ -227,45 +223,59 @@ def load_peaks(peak_file, standard_chroms_only=False, cytoband_file=None, centro
     """
     logger.info(f"Loading peaks from: {peak_file}")
     
-    # BroadPeak format: chr, start, end, name, score, strand, signalValue, pValue, qValue
-    peaks_df = pd.read_csv(peak_file, sep='\t', header=None,
-                           names=['chr', 'start', 'end', 'name', 'score', 
-                                 'strand', 'signalValue', 'pValue', 'qValue'])
+    # Peak format: chr, start, end, name, score, strand, signalValue, pValue, qValue
+    # (broadPeak = 9 cols; narrowPeak = 10 cols — read first 9 only)
+    col_names = ['chr', 'start', 'end', 'name', 'score', 'strand', 'signalValue', 'pValue', 'qValue']
+    peaks_pl = pl.read_csv(
+        peak_file, separator='\t', has_header=False,
+        new_columns=col_names,
+        n_threads=0,          # use all available threads
+        columns=list(range(9))
+    )
     
-    original_count = len(peaks_df)
+    original_count = len(peaks_pl)
     logger.info(f"  Loaded {original_count:,} broad peaks")
     
     # Apply filters
     if standard_chroms_only:
-        before = len(peaks_df)
-        peaks_df = peaks_df[peaks_df['chr'].isin(STANDARD_CHROMS)].copy()
-        logger.info(f"  Filtered to standard chromosomes: {before:,} → {len(peaks_df):,}")
+        before = len(peaks_pl)
+        peaks_pl = peaks_pl.filter(pl.col('chr').is_in(list(STANDARD_CHROMS)))
+        logger.info(f"  Filtered to standard chromosomes: {before:,} → {len(peaks_pl):,}")
     
     # Load and apply cytoband filtering
     if cytoband_file:
         problematic_regions = load_cytoband_regions(cytoband_file, centromere_buffer)
-        before = len(peaks_df)
-        peaks_df = peaks_df[~peaks_df.apply(
-            lambda row: is_peak_in_problematic_region(row['chr'], row['start'], row['end'], problematic_regions),
-            axis=1
-        )].copy()
-        logger.info(f"  Filtered problematic regions: {before:,} → {len(peaks_df):,}")
+        before = len(peaks_pl)
+        # Build exclusion mask using vectorised Polars expressions per chrom/region
+        keep_mask = pl.lit(True)
+        for chrom, regions in problematic_regions.items():
+            for rs, re in regions:
+                mid_expr = (pl.col('start') + pl.col('end')) // 2
+                bad = (
+                    (pl.col('chr') == chrom) &
+                    (mid_expr >= rs) & (mid_expr <= re)
+                )
+                keep_mask = keep_mask & (~bad)
+        peaks_pl = peaks_pl.filter(keep_mask)
+        logger.info(f"  Filtered problematic regions: {before:,} → {len(peaks_pl):,}")
     
-    if len(peaks_df) < original_count:
-        logger.info(f"  Total peaks after filtering: {len(peaks_df):,} (reduced from {original_count:,})")
+    if len(peaks_pl) < original_count:
+        logger.info(f"  Total peaks after filtering: {len(peaks_pl):,} (reduced from {original_count:,})")
     
-    # Group by chromosome for faster lookup
+    # Group by chromosome for faster lookup (numpy arrays for overlap kernel)
     peaks_by_chr = {}
     peak_ids_by_chr = {}
     
-    for chrom in peaks_df['chr'].unique():
-        chr_peaks = peaks_df[peaks_df['chr'] == chrom].sort_values('start').reset_index(drop=True)
-        peaks_by_chr[chrom] = chr_peaks[['start', 'end']].values
-        peak_ids_by_chr[chrom] = chr_peaks['name'].tolist()
+    for chrom in peaks_pl['chr'].unique().to_list():
+        chr_peaks = peaks_pl.filter(pl.col('chr') == chrom).sort('start')
+        peaks_by_chr[chrom] = chr_peaks.select(['start', 'end']).to_numpy()
+        peak_ids_by_chr[chrom] = chr_peaks['name'].to_list()
     
     logger.info(f"  Peaks across {len(peaks_by_chr)} chromosomes")
     
-    return peaks_by_chr, peak_ids_by_chr, peaks_df
+    # Keep a pandas-compatible object for callers that access peaks_df columns;
+    # return as Polars DataFrame (callers only use len() or pass it through)
+    return peaks_by_chr, peak_ids_by_chr, peaks_pl
 
 
 def find_peak_id_vectorized(anchor_chr, anchor_pos, peaks_by_chr, peak_ids_by_chr):
@@ -375,29 +385,37 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
     logger.info(f"Loading PETs from BEDPE: {bedpe_file}")
     
     # BEDPE format: chr1 start1 end1 chr2 start2 end2 [optional columns]
-    pets_df = pd.read_csv(bedpe_file, sep='\t', header=None, low_memory=False)
+    # Use Polars lazy scan → collect for multi-threaded I/O
+    pets_pl = pl.read_csv(
+        bedpe_file, separator='\t', has_header=False,
+        infer_schema_length=10000, n_threads=0
+    )
     
-    n_cols = len(pets_df.columns)
+    n_cols = len(pets_pl.columns)
     logger.info(f"  Detected {n_cols} columns in BEDPE file")
     
     # Assign column names
+    base_cols = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2']
     if n_cols >= 6:
-        base_cols = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2']
         if n_cols == 6:
-            pets_df.columns = base_cols
+            all_cols = base_cols
         elif n_cols == 7:
-            pets_df.columns = base_cols + ['name']
+            all_cols = base_cols + ['name']
         elif n_cols == 8:
-            pets_df.columns = base_cols + ['name', 'score']
+            all_cols = base_cols + ['name', 'score']
         elif n_cols == 10:
-            pets_df.columns = base_cols + ['name', 'score', 'strand1', 'strand2']
+            all_cols = base_cols + ['name', 'score', 'strand1', 'strand2']
         else:
-            extra_cols = [f'col{i}' for i in range(6, n_cols)]
-            pets_df.columns = base_cols + extra_cols
+            all_cols = base_cols + [f'col{i}' for i in range(6, n_cols)]
+        pets_pl = pets_pl.rename(dict(zip(pets_pl.columns, all_cols)))
     else:
         raise ValueError(f"BEDPE file must have at least 6 columns, found {n_cols}")
     
-    logger.info(f"  Loaded {len(pets_df):,} PETs from BEDPE")
+    logger.info(f"  Loaded {len(pets_pl):,} PETs from BEDPE")
+    
+    # Convert to pandas for the numpy parallel overlap kernel (minimal copy)
+    import pandas as _pd
+    pets_df = pets_pl.to_pandas()
     
     # ═══════════════════════════════════════════════════════════════════
     # PARALLEL CLASSIFICATION
@@ -438,7 +456,7 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
     
     # ═══════════════════════════════════════════════════════════════════
     # PEAK-PAIR COUNTING: Track P2P interactions (same-peak + cross-peak)
-    # AND ADD PEAK INFO TO P2P PETS
+    # AND ADD PEAK INFO TO P2P PETS — vectorized via Polars
     # ═══════════════════════════════════════════════════════════════════
     logger.info("Counting peak-to-peak interactions and adding peak info to P2P PETs...")
     peak_pair_data = []  # List of (peak1, peak2, count, type)
@@ -450,21 +468,17 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
     pets_df['peak2_id'] = None
     pets_df['type'] = None
     
-    p2p_pets = pets_df[(pets_df['anchor1_in_peak']) & (pets_df['anchor2_in_peak'])]
+    p2p_mask = pets_df['anchor1_in_peak'].values & pets_df['anchor2_in_peak'].values
+    p2p_pets = pets_df[p2p_mask].copy()
     
     if len(p2p_pets) > 0:
         logger.info(f"  Processing {len(p2p_pets):,} P2P PETs...")
         
         # Vectorized midpoint calculation
-        p2p_pets = p2p_pets.copy()
-        p2p_pets['mid1'] = (p2p_pets['start1'] + p2p_pets['end1']) // 2
-        p2p_pets['mid2'] = (p2p_pets['start2'] + p2p_pets['end2']) // 2
+        p2p_pets['mid1'] = (p2p_pets['start1'].values + p2p_pets['end1'].values) // 2
+        p2p_pets['mid2'] = (p2p_pets['start2'].values + p2p_pets['end2'].values) // 2
         
-        # Count both same-peak and cross-peak interactions
-        peak_pair_counts = defaultdict(lambda: {'same_peak': 0, 'cross_peak': 0, 'peak1_macs_id': None, 'peak2_macs_id': None})
-        
-        # Vectorized peak-ID lookup per chromosome
-        # Build lookup arrays per chrom once, then use searchsorted per row group
+        # Vectorized peak-ID lookup per chromosome using searchsorted
         def _lookup_peak_ids_for_chrom(chrom, positions, peaks_by_chr, peak_ids_by_chr):
             """Return (peak_idx_array, peak_id_array) for positions on chrom."""
             if chrom not in peaks_by_chr:
@@ -476,14 +490,12 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
             out_idx = np.full(len(positions), -1, dtype=np.int64)
             out_id  = np.full(len(positions), None, dtype=object)
             for i, pos in enumerate(positions):
-                # searchsorted to narrow candidates
                 lo = np.searchsorted(p_starts, pos, side='right') - 1
                 if lo >= 0 and p_starts[lo] <= pos <= p_ends[lo]:
                     out_idx[i] = lo
                     out_id[i]  = ids[lo]
             return out_idx, out_id
 
-        # Process by chromosome group — much fewer iterations than per-row
         p2p_pets['peak1_idx_num'] = -1
         p2p_pets['peak1_macs']    = None
         p2p_pets['peak2_idx_num'] = -1
@@ -519,44 +531,52 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
         pets_df.loc[p2p_valid.index, 'peak2_id']    = p2p_valid['peak2_macs'].values
         pets_df.loc[p2p_valid.index, 'type']        = p2p_valid['pet_type'].values
 
-        # Count pairs using groupby — O(N) instead of O(N) with Python dict overhead
-        for idx, row in p2p_valid.iterrows():
-            chr1 = str(row['chr1'])
-            chr2 = str(row['chr2'])
-            peak1_index_id = row['peak1_index_id']
-            peak2_index_id = row['peak2_index_id']
-            peak1_macs_id  = row['peak1_macs']
-            peak2_macs_id  = row['peak2_macs']
+        # ── Polars groupby for pair counting — replaces iterrows ─────────────
+        p2p_pl = pl.from_pandas(p2p_valid[[
+            'chr1', 'chr2', 'peak1_index_id', 'peak1_macs',
+            'peak2_index_id', 'peak2_macs', 'pet_type'
+        ]].reset_index(drop=True))
 
-            pair = tuple(sorted([peak1_index_id, peak2_index_id]))
+        # Canonical pair key: sort so smaller index is always first
+        p2p_pl = p2p_pl.with_columns([
+            pl.when(pl.col('peak1_index_id') <= pl.col('peak2_index_id'))
+              .then(pl.col('peak1_index_id'))
+              .otherwise(pl.col('peak2_index_id'))
+              .alias('pair_key1'),
+            pl.when(pl.col('peak1_index_id') <= pl.col('peak2_index_id'))
+              .then(pl.col('peak2_index_id'))
+              .otherwise(pl.col('peak1_index_id'))
+              .alias('pair_key2'),
+            pl.when(pl.col('peak1_index_id') <= pl.col('peak2_index_id'))
+              .then(pl.col('peak1_macs'))
+              .otherwise(pl.col('peak2_macs'))
+              .alias('canonical_macs1'),
+            pl.when(pl.col('peak1_index_id') <= pl.col('peak2_index_id'))
+              .then(pl.col('peak2_macs'))
+              .otherwise(pl.col('peak1_macs'))
+              .alias('canonical_macs2'),
+        ])
 
-            if peak1_index_id <= peak2_index_id:
-                peak_pair_counts[pair]['peak1_macs_id'] = peak1_macs_id
-                peak_pair_counts[pair]['peak2_macs_id'] = peak2_macs_id
-            else:
-                peak_pair_counts[pair]['peak1_macs_id'] = peak2_macs_id
-                peak_pair_counts[pair]['peak2_macs_id'] = peak1_macs_id
+        # Group and count by (pair_key1, pair_key2, pet_type)
+        pair_counts = (
+            p2p_pl
+            .group_by(['pair_key1', 'pair_key2', 'pet_type'])
+            .agg([
+                pl.len().alias('count'),
+                pl.col('canonical_macs1').first(),
+                pl.col('canonical_macs2').first(),
+            ])
+        )
 
-            if peak1_index_id == peak2_index_id:
-                if include_same_peak:
-                    peak_pair_counts[pair]['same_peak'] += 1
-            else:
-                peak_pair_counts[pair]['cross_peak'] += 1
-        
-        # Convert to list format for CSV export with MACS3 IDs
-        for (peak1, peak2), counts in peak_pair_counts.items():
-            if counts['same_peak'] > 0 and include_same_peak:
-                peak_pair_data.append((
-                    peak1, counts['peak1_macs_id'], 
-                    peak2, counts['peak2_macs_id'], 
-                    counts['same_peak'], 'same_peak'
-                ))
-            if counts['cross_peak'] > 0:
-                peak_pair_data.append((
-                    peak1, counts['peak1_macs_id'], 
-                    peak2, counts['peak2_macs_id'], 
-                    counts['cross_peak'], 'cross_peak'
-                ))
+        for row in pair_counts.iter_rows(named=True):
+            ptype = row['pet_type']
+            if ptype == 'same_peak' and not include_same_peak:
+                continue
+            peak_pair_data.append((
+                row['pair_key1'], row['canonical_macs1'],
+                row['pair_key2'], row['canonical_macs2'],
+                row['count'], ptype
+            ))
     
     logger.info(f"  Found {len(peak_pair_data):,} peak-pair entries (same + cross)")
     pets_df.peak_pair_data = peak_pair_data
@@ -608,11 +628,10 @@ def summarize_classification(pets_df):
     logger.info("=" * 70)
     
     total = len(pets_df)
-    
-    # Count by category
-    p2p = (pets_df['category'] == 'P2P').sum()
-    p2d = (pets_df['category'] == 'P2D').sum()
-    d2d = (pets_df['category'] == 'D2D').sum()
+    cat_col = pets_df['category']
+    p2p = int((cat_col == 'P2P').sum())
+    p2d = int((cat_col == 'P2D').sum())
+    d2d = int((cat_col == 'D2D').sum())
     
     logger.info(f"Total PETs: {total:,}")
     logger.info("")
@@ -651,38 +670,42 @@ def export_by_category(pets_df, output_prefix):
     """
     logger.info("Exporting PETs by category...")
     
+    # Convert to Polars for fast multi-threaded write
+    pets_pl = pl.from_pandas(pets_df.reset_index(drop=True))
+    
     # Export all PETs with category annotation
     all_file = f"{output_prefix}.all_pets.classified.txt"
-    pets_df.to_csv(all_file, sep='\t', index=False)
+    pets_pl.write_csv(all_file, separator='\t')
     logger.info(f"  All PETs with categories: {all_file}")
     
     # Export P2P PETs
     p2p_file = f"{output_prefix}.P2P_pets.txt"
-    p2p_pets = pets_df[pets_df['category'] == 'P2P']
-    p2p_pets.to_csv(p2p_file, sep='\t', index=False)
-    logger.info(f"  Peak-to-Peak PETs: {p2p_file} ({len(p2p_pets):,} PETs)")
+    p2p_pl = pets_pl.filter(pl.col('category') == 'P2P')
+    p2p_pl.write_csv(p2p_file, separator='\t')
+    logger.info(f"  Peak-to-Peak PETs: {p2p_file} ({len(p2p_pl):,} PETs)")
     
     # Export P2D PETs
     p2d_file = f"{output_prefix}.P2D_pets.txt"
-    p2d_pets = pets_df[pets_df['category'] == 'P2D']
-    p2d_pets.to_csv(p2d_file, sep='\t', index=False)
-    logger.info(f"  Peak-to-Distal PETs: {p2d_file} ({len(p2d_pets):,} PETs)")
+    p2d_pl = pets_pl.filter(pl.col('category') == 'P2D')
+    p2d_pl.write_csv(p2d_file, separator='\t')
+    logger.info(f"  Peak-to-Distal PETs: {p2d_file} ({len(p2d_pl):,} PETs)")
     
     # Export D2D PETs
     d2d_file = f"{output_prefix}.D2D_pets.txt"
-    d2d_pets = pets_df[pets_df['category'] == 'D2D']
-    d2d_pets.to_csv(d2d_file, sep='\t', index=False)
-    logger.info(f"  Distal-to-Distal PETs: {d2d_file} ({len(d2d_pets):,} PETs)")
+    d2d_pl = pets_pl.filter(pl.col('category') == 'D2D')
+    d2d_pl.write_csv(d2d_file, separator='\t')
+    logger.info(f"  Distal-to-Distal PETs: {d2d_file} ({len(d2d_pl):,} PETs)")
     
     # Export summary statistics
+    total = len(pets_pl)
     summary_file = f"{output_prefix}.classification_summary.txt"
     with open(summary_file, 'w') as f:
         f.write("PET Classification Summary\n")
         f.write("=" * 50 + "\n\n")
-        f.write(f"Total PETs: {len(pets_df):,}\n\n")
-        f.write(f"Peak-to-Peak (P2P): {len(p2p_pets):,} ({len(p2p_pets)/len(pets_df)*100:.1f}%)\n")
-        f.write(f"Peak-to-Distal (P2D): {len(p2d_pets):,} ({len(p2d_pets)/len(pets_df)*100:.1f}%)\n")
-        f.write(f"Distal-to-Distal (D2D): {len(d2d_pets):,} ({len(d2d_pets)/len(pets_df)*100:.1f}%)\n")
+        f.write(f"Total PETs: {total:,}\n\n")
+        f.write(f"Peak-to-Peak (P2P): {len(p2p_pl):,} ({len(p2p_pl)/total*100:.1f}%)\n")
+        f.write(f"Peak-to-Distal (P2D): {len(p2d_pl):,} ({len(p2d_pl)/total*100:.1f}%)\n")
+        f.write(f"Distal-to-Distal (D2D): {len(d2d_pl):,} ({len(d2d_pl)/total*100:.1f}%)\n")
     
     logger.info(f"  Summary statistics: {summary_file}")
     
@@ -690,23 +713,22 @@ def export_by_category(pets_df, output_prefix):
     if hasattr(pets_df, 'peak_pair_data') and pets_df.peak_pair_data:
         peak_pair_file = f"{output_prefix}.peak_pair_counts.csv"
         
-        # Create DataFrame for easier CSV export with MACS3 IDs
-        peak_pair_df = pd.DataFrame(pets_df.peak_pair_data, 
-                                     columns=['Peak1_Index', 'Peak1_ID', 'Peak2_Index', 'Peak2_ID', 'PET_Count', 'Type'])
+        # Build Polars DataFrame and sort by PET_Count descending
+        peak_pair_pl = pl.DataFrame(
+            pets_df.peak_pair_data,
+            schema=['Peak1_Index', 'Peak1_ID', 'Peak2_Index', 'Peak2_ID', 'PET_Count', 'Type'],
+            orient='row'
+        ).sort('PET_Count', descending=True)
         
-        # Sort by PET_Count descending
-        peak_pair_df = peak_pair_df.sort_values('PET_Count', ascending=False)
+        peak_pair_pl.write_csv(peak_pair_file)
         
-        # Export to CSV
-        peak_pair_df.to_csv(peak_pair_file, index=False)
-        
-        same_peak_entries = (peak_pair_df['Type'] == 'same_peak').sum()
-        cross_peak_entries = (peak_pair_df['Type'] == 'cross_peak').sum()
+        same_peak_entries = int((peak_pair_pl['Type'] == 'same_peak').sum())
+        cross_peak_entries = int((peak_pair_pl['Type'] == 'cross_peak').sum())
         
         logger.info(f"  Peak-pair interaction matrix: {peak_pair_file}")
         logger.info(f"    Same-peak entries: {same_peak_entries:,}")
         logger.info(f"    Cross-peak entries: {cross_peak_entries:,}")
-        logger.info(f"    Total entries: {len(peak_pair_df):,}")
+        logger.info(f"    Total entries: {len(peak_pair_pl):,}")
 
 
 def main():

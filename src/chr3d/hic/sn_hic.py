@@ -603,15 +603,20 @@ class SnHiCPipeline:
         output_dir: str,
         run_clustering: bool = False,
         cleanup: bool = False,
+        start_from: int = 1,
     ) -> Dict[str, Any]:
         """
-        Run the complete sn-Hi-C pipeline on multiple cells.
+        Run the complete sn-Hi-C pipeline on multiple cells, or resume later.
 
         Args:
             cells: List of (cell_id, fastq_r1, fastq_r2) tuples
             output_dir: Root output directory
             run_clustering: Run GNN clustering after QC (default: False)
             cleanup: Remove per-cell intermediates after processing (default: False)
+            start_from: Step to resume from:
+                1=per-cell processing, 5=cell QC, 6=pseudobulk, 7=clustering.
+                Default 1 runs the full pipeline. When resuming, per-cell cool
+                files are expected to exist at ``output_dir/cells/{cell_id}/matrices/{cell_id}.cool``.
 
         Returns:
             Dictionary with full pipeline statistics:
@@ -624,12 +629,23 @@ class SnHiCPipeline:
         """
         pipeline_start = time.time()
 
+        if start_from < 1 or start_from > 7:
+            raise ValueError(f"start_from must be between 1 and 7 (got {start_from})")
+        # Only valid resume entry points are 1, 5, 6, 7 since 1-4 are a single block
+        if start_from in (2, 3, 4):
+            logger.warning(
+                f"start_from={start_from} is inside the per-cell block (steps 1-4); "
+                "treating as start_from=1"
+            )
+            start_from = 1
+
         logger.info("=" * 70)
         logger.info("sn-Hi-C PIPELINE")
         logger.info("=" * 70)
         logger.info(f"  Cells:           {len(cells)}")
         logger.info(f"  Output dir:      {output_dir}")
         logger.info(f"  Run clustering:  {run_clustering}")
+        logger.info(f"  Start from:      step {start_from}")
         logger.info(f"  Start time:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
         os.makedirs(output_dir, exist_ok=True)
@@ -637,35 +653,61 @@ class SnHiCPipeline:
         timing = {}
         all_stats: Dict[str, Any] = {
             'num_cells_input': len(cells),
+            'start_from': start_from,
             'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
 
         # ── Step 1-4: Per-cell processing ─────────────────────────────────────
-        logger.info("\n[STEP 1-4] Processing cells individually...")
-        step_start = time.time()
         per_cell_stats: Dict[str, Dict] = {}
+        if start_from <= 1:
+            logger.info("\n[STEP 1-4] Processing cells individually...")
+            step_start = time.time()
 
-        for cell_id, fastq_r1, fastq_r2 in cells:
-            cell_out = os.path.join(output_dir, 'cells', cell_id)
-            logger.info(f"  Processing cell: {cell_id}")
-            try:
-                stats = self.process_cell(cell_id, fastq_r1, fastq_r2, cell_out, cleanup)
-                per_cell_stats[cell_id] = stats
-            except NotImplementedError:
-                raise
-            except Exception as e:
-                logger.error(f"  Cell {cell_id} failed: {e}")
-                per_cell_stats[cell_id] = {'status': 'failed', 'error': str(e)}
+            for cell_id, fastq_r1, fastq_r2 in cells:
+                cell_out = os.path.join(output_dir, 'cells', cell_id)
+                logger.info(f"  Processing cell: {cell_id}")
+                try:
+                    stats = self.process_cell(cell_id, fastq_r1, fastq_r2, cell_out, cleanup)
+                    per_cell_stats[cell_id] = stats
+                except NotImplementedError:
+                    raise
+                except Exception as e:
+                    logger.error(f"  Cell {cell_id} failed: {e}")
+                    per_cell_stats[cell_id] = {'status': 'failed', 'error': str(e)}
 
-        timing['per_cell_processing'] = time.time() - step_start
+            timing['per_cell_processing'] = time.time() - step_start
+        else:
+            logger.info("\n[STEP 1-4] SKIPPED (resume mode) — reading per-cell cools from disk")
+            for cell_id, _fq1, _fq2 in cells:
+                cool_path = os.path.join(
+                    output_dir, 'cells', cell_id, 'matrices', f'{cell_id}.cool'
+                )
+                if os.path.exists(cool_path):
+                    per_cell_stats[cell_id] = {
+                        'status': 'done', 'cool_file': cool_path, 'resumed': True
+                    }
+                else:
+                    logger.warning(f"  Cell {cell_id}: missing cool at {cool_path}")
+                    per_cell_stats[cell_id] = {
+                        'status': 'failed', 'error': f'missing cool: {cool_path}'
+                    }
         all_stats['per_cell_stats'] = per_cell_stats
 
         # ── Step 5: Cell QC ───────────────────────────────────────────────────
-        logger.info("\n[STEP 5] Cell QC filtering...")
-        step_start = time.time()
-        qc_out = os.path.join(output_dir, 'qc')
-        passing_cells, failing_cells = self.run_cell_qc(per_cell_stats, qc_out)
-        timing['cell_qc'] = time.time() - step_start
+        if start_from <= 5:
+            logger.info("\n[STEP 5] Cell QC filtering...")
+            step_start = time.time()
+            qc_out = os.path.join(output_dir, 'qc')
+            passing_cells, failing_cells = self.run_cell_qc(per_cell_stats, qc_out)
+            timing['cell_qc'] = time.time() - step_start
+        else:
+            logger.info("\n[STEP 5] SKIPPED (resume mode) — using all cells with a cool file as passing")
+            passing_cells = [
+                cid for cid, s in per_cell_stats.items() if s.get('cool_file')
+            ]
+            failing_cells = [
+                cid for cid, s in per_cell_stats.items() if not s.get('cool_file')
+            ]
 
         logger.info(f"  Passing cells: {len(passing_cells)} / {len(cells)}")
         logger.info(f"  Failing cells: {len(failing_cells)}")
@@ -673,19 +715,23 @@ class SnHiCPipeline:
         all_stats['failing_cells'] = failing_cells
 
         # ── Step 6: Pseudobulk ────────────────────────────────────────────────
-        logger.info("\n[STEP 6] Pseudobulk aggregation...")
-        step_start = time.time()
         cell_cool_files = {
             cid: per_cell_stats[cid].get('cool_file', '')
             for cid in passing_cells
         }
-        pseudobulk_out = os.path.join(output_dir, 'pseudobulk')
-        pseudobulk_stats = self.run_pseudobulk(passing_cells, cell_cool_files, pseudobulk_out)
-        timing['pseudobulk'] = time.time() - step_start
-        all_stats['pseudobulk'] = pseudobulk_stats
+        if start_from <= 6:
+            logger.info("\n[STEP 6] Pseudobulk aggregation...")
+            step_start = time.time()
+            pseudobulk_out = os.path.join(output_dir, 'pseudobulk')
+            pseudobulk_stats = self.run_pseudobulk(passing_cells, cell_cool_files, pseudobulk_out)
+            timing['pseudobulk'] = time.time() - step_start
+            all_stats['pseudobulk'] = pseudobulk_stats
+        else:
+            logger.info("\n[STEP 6] SKIPPED (resume mode)")
+            all_stats['pseudobulk'] = {'resumed': True}
 
         # ── Step 7: Clustering (optional) ─────────────────────────────────────
-        if run_clustering:
+        if run_clustering and start_from <= 7:
             logger.info("\n[STEP 7] GNN clustering...")
             step_start = time.time()
             clustering_out = os.path.join(output_dir, 'clustering')

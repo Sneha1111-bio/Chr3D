@@ -90,24 +90,30 @@ class ChiaPetPipeline:
 
     def run(
         self,
-        fastq_r1: str,
-        fastq_r2: str,
-        output_dir: str,
+        fastq_r1: Optional[str] = None,
+        fastq_r2: Optional[str] = None,
+        output_dir: str = './results',
         sample_id: str = 'sample',
+        start_from: int = 1,
     ) -> Dict:
         """
-        Run the full ChIA-PET pipeline.
+        Run the full ChIA-PET pipeline, or resume from a later step.
 
         Parameters
         ----------
-        fastq_r1 : str
-            Path to R1 FASTQ (gzipped or plain).
-        fastq_r2 : str
-            Path to R2 FASTQ (gzipped or plain).
+        fastq_r1 : str, optional
+            Path to R1 FASTQ (gzipped or plain). Required when ``start_from<=1``.
+        fastq_r2 : str, optional
+            Path to R2 FASTQ (gzipped or plain). Required when ``start_from<=1``.
         output_dir : str
             Root output directory (created if absent).
         sample_id : str
             Sample name used as file prefix.
+        start_from : int
+            Step to resume from (1=linker filtering, 2=mapping, 3=peak calling,
+            4=background model/loop calling). Default 1 runs the full pipeline.
+            For any value > 1, the pre-computed outputs from previous steps are
+            expected to already exist at the canonical paths under ``output_dir``.
 
         Returns
         -------
@@ -115,6 +121,14 @@ class ChiaPetPipeline:
             Collected stats from every pipeline step + timing breakdown.
         """
         pipeline_start = time.time()
+        if start_from < 1 or start_from > 4:
+            raise ValueError(
+                f"start_from must be between 1 and 4 (got {start_from})"
+            )
+        if start_from == 1 and (not fastq_r1 or not fastq_r2):
+            raise ValueError(
+                "fastq_r1 and fastq_r2 are required when start_from=1"
+            )
 
         # Capture system configuration before pipeline starts
         out = Path(output_dir)
@@ -150,51 +164,74 @@ class ChiaPetPipeline:
         logger.info(f"  Q-value    : {self.qvalue}")
         logger.info(f"  FDR alpha  : {self.alpha}")
         logger.info(f"  Output dir : {output_dir}")
+        logger.info(f"  Start from : step {start_from}")
         logger.info("=" * 70)
 
         timing = {}
-        all_stats = {'sample_id': sample_id}
+        all_stats = {'sample_id': sample_id, 'start_from': start_from}
 
         # ------------------------------------------------------------------
         # Step 1: Linker filtering
         # ------------------------------------------------------------------
-        logger.info("\n[STEP 1] Linker filtering...")
-        t0 = time.time()
-        filt_r1, filt_r2, filter_stats = self._run_linker_filtering(
-            fastq_r1, fastq_r2, str(filtered_dir), sample_id
-        )
-        timing['linker_filtering'] = time.time() - t0
-        all_stats['filter_stats'] = filter_stats
-        logger.info(f"  Done in {_fmt_time(timing['linker_filtering'])}")
+        if start_from <= 1:
+            logger.info("\n[STEP 1] Linker filtering...")
+            t0 = time.time()
+            filt_r1, filt_r2, filter_stats = self._run_linker_filtering(
+                fastq_r1, fastq_r2, str(filtered_dir), sample_id
+            )
+            timing['linker_filtering'] = time.time() - t0
+            all_stats['filter_stats'] = filter_stats
+            logger.info(f"  Done in {_fmt_time(timing['linker_filtering'])}")
+        else:
+            logger.info("\n[STEP 1] SKIPPED (resume mode)")
+            filt_r1 = os.path.join(str(filtered_dir), f"{sample_id}_filtered_R1.fastq")
+            filt_r2 = os.path.join(str(filtered_dir), f"{sample_id}_filtered_R2.fastq")
 
         # ------------------------------------------------------------------
         # Step 2: Mapping
         # ------------------------------------------------------------------
-        logger.info("\n[STEP 2] Mapping (BWA + samtools + BEDPE)...")
-        t0 = time.time()
-        map_stats = self._run_mapping(
-            filt_r1, filt_r2, str(mapped_dir), sample_id
-        )
-        timing['mapping'] = time.time() - t0
-        all_stats['map_stats'] = map_stats
-        logger.info(f"  Done in {_fmt_time(timing['mapping'])}")
+        if start_from <= 2:
+            logger.info("\n[STEP 2] Mapping (BWA + samtools + BEDPE)...")
+            t0 = time.time()
+            map_stats = self._run_mapping(
+                filt_r1, filt_r2, str(mapped_dir), sample_id
+            )
+            timing['mapping'] = time.time() - t0
+            all_stats['map_stats'] = map_stats
+            logger.info(f"  Done in {_fmt_time(timing['mapping'])}")
 
-        dedup_bedpe = map_stats['final_bedpe']
-        filtered_bam = map_stats['filtered_bam']
+            dedup_bedpe = map_stats['final_bedpe']
+            filtered_bam = map_stats['filtered_bam']
+        else:
+            logger.info("\n[STEP 2] SKIPPED (resume mode)")
+            dedup_bedpe  = os.path.join(str(mapped_dir), f"{sample_id}.dedup.bedpe")
+            filtered_bam = os.path.join(str(mapped_dir), f"{sample_id}.q{self.mapq}.bam")
+            if not os.path.exists(dedup_bedpe):
+                raise FileNotFoundError(
+                    f"Cannot resume from step {start_from}: missing {dedup_bedpe}"
+                )
 
         # ------------------------------------------------------------------
         # Step 3: Peak calling (MACS3 on filtered BAM)
         # ------------------------------------------------------------------
-        logger.info("\n[STEP 3] Peak calling (MACS3)...")
-        t0 = time.time()
-        peak_stats = self._run_peak_calling(
-            filtered_bam, str(peaks_dir), sample_id
-        )
-        timing['peak_calling'] = time.time() - t0
-        all_stats['peak_stats'] = peak_stats
-        logger.info(f"  Done in {_fmt_time(timing['peak_calling'])}")
-
-        peaks_file = peak_stats.get('peaks_file', '')
+        if start_from <= 3:
+            logger.info("\n[STEP 3] Peak calling (MACS3)...")
+            t0 = time.time()
+            peak_stats = self._run_peak_calling(
+                filtered_bam, str(peaks_dir), sample_id
+            )
+            timing['peak_calling'] = time.time() - t0
+            all_stats['peak_stats'] = peak_stats
+            logger.info(f"  Done in {_fmt_time(timing['peak_calling'])}")
+            peaks_file = peak_stats.get('peaks_file', '')
+        else:
+            logger.info("\n[STEP 3] SKIPPED (resume mode)")
+            peaks_file = os.path.join(str(peaks_dir), f"{sample_id}_peaks.narrowPeak")
+            if not os.path.exists(peaks_file):
+                raise FileNotFoundError(
+                    f"Cannot resume from step {start_from}: missing {peaks_file}"
+                )
+            all_stats['peak_stats'] = {'peaks_file': peaks_file, 'resumed': True}
 
         # ------------------------------------------------------------------
         # Step 4: Background model  (classify → extract → phase1 → phase2 → FDR)

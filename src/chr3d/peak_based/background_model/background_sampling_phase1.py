@@ -14,6 +14,7 @@
 """
 
 import logging
+import polars as pl
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -181,71 +182,69 @@ class BackgroundSamplingPhase1:
         logger.info(f"{'='*70}")
         logger.info(f"  File: {d2d_file}")
         
-        # Load D2D PETs
-        d2d_df = pd.read_csv(d2d_file, sep='\t', header=None, low_memory=False)
+        # Load D2D PETs with Polars (multi-threaded I/O)
+        d2d_pl = pl.read_csv(
+            d2d_file, separator='\t', has_header=False,
+            infer_schema_length=10000, n_threads=0
+        )
         
         # Assign column names
-        if len(d2d_df.columns) == 10:
-            d2d_df.columns = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2', 
-                             'name', 'score', 'strand1', 'strand2']
+        n_cols = len(d2d_pl.columns)
+        if n_cols == 10:
+            col_names = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2',
+                         'name', 'score', 'strand1', 'strand2']
         else:
-            d2d_df.columns = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2', 
-                             'name', 'score', 'strand1', 'strand2', 'anchor1_in_peak', 
-                             'anchor2_in_peak', 'peak1_index', 'peak1_id', 'peak2_index', 
-                             'peak2_id', 'type', 'category']
+            col_names = ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2',
+                         'name', 'score', 'strand1', 'strand2', 'anchor1_in_peak',
+                         'anchor2_in_peak', 'peak1_index', 'peak1_id', 'peak2_index',
+                         'peak2_id', 'type', 'category']
+        if len(col_names) == n_cols:
+            d2d_pl = d2d_pl.rename(dict(zip(d2d_pl.columns, col_names)))
+        else:
+            # Fallback: name only the first 6 coord columns
+            d2d_pl = d2d_pl.rename(dict(zip(
+                d2d_pl.columns[:6],
+                ['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2']
+            )))
         
-        logger.info(f"  Total D2D PETs: {len(d2d_df):,}")
+        logger.info(f"  Total D2D PETs: {len(d2d_pl):,}")
         
-        # Convert coordinate columns to integers
+        # Cast coordinate columns to Int64, drop nulls
         logger.info(f"  Converting coordinates to integers...")
-        d2d_df['start1'] = pd.to_numeric(d2d_df['start1'], errors='coerce').astype('Int64')
-        d2d_df['end1'] = pd.to_numeric(d2d_df['end1'], errors='coerce').astype('Int64')
-        d2d_df['start2'] = pd.to_numeric(d2d_df['start2'], errors='coerce').astype('Int64')
-        d2d_df['end2'] = pd.to_numeric(d2d_df['end2'], errors='coerce').astype('Int64')
-        
-        # Remove rows with invalid coordinates
-        d2d_df = d2d_df.dropna(subset=['start1', 'end1', 'start2', 'end2'])
-        logger.info(f"  Valid D2D PETs after coordinate conversion: {len(d2d_df):,}")
+        d2d_pl = d2d_pl.with_columns([
+            pl.col('start1').cast(pl.Int64, strict=False),
+            pl.col('end1').cast(pl.Int64, strict=False),
+            pl.col('start2').cast(pl.Int64, strict=False),
+            pl.col('end2').cast(pl.Int64, strict=False),
+        ]).drop_nulls(subset=['start1', 'end1', 'start2', 'end2'])
+        logger.info(f"  Valid D2D PETs after coordinate conversion: {len(d2d_pl):,}")
         
         # Calculate midpoints and organize by chromosome
         logger.info(f"  Organizing D2D PETs by chromosome...")
+        d2d_pl = d2d_pl.with_columns([
+            ((pl.col('start1') + pl.col('end1')) // 2).alias('mid1'),
+            ((pl.col('start2') + pl.col('end2')) // 2).alias('mid2'),
+        ])
         
-        for chrom in d2d_df['chr1'].unique():
-            chrom_pets = d2d_df[d2d_df['chr1'] == chrom].copy()
-            
-            # Calculate midpoints
-            chrom_pets['mid1'] = (chrom_pets['start1'] + chrom_pets['end1']) // 2
-            chrom_pets['mid2'] = (chrom_pets['start2'] + chrom_pets['end2']) // 2
-            
-            # Sort by mid1 for binary search
-            chrom_pets = chrom_pets.sort_values('mid1')
-            
-            # Store as numpy arrays for speed
+        for chrom in d2d_pl['chr1'].unique().to_list():
+            chrom_pl = d2d_pl.filter(pl.col('chr1') == chrom).sort('mid1')
             self.d2d_by_chr[chrom] = {
-                'mid1': chrom_pets['mid1'].values,
-                'mid2': chrom_pets['mid2'].values
+                'mid1': chrom_pl['mid1'].to_numpy(),
+                'mid2': chrom_pl['mid2'].to_numpy(),
             }
-            
-            # Estimate chromosome length
-            self.chrom_lengths[chrom] = max(
-                chrom_pets['end1'].max(),
-                chrom_pets['end2'].max()
-            )
+            self.chrom_lengths[chrom] = int(max(
+                chrom_pl['end1'].max(),
+                chrom_pl['end2'].max()
+            ))
         
         logger.info(f"  D2D PETs organized across {len(self.d2d_by_chr)} chromosomes")
         
         # If not chromosome-specific, also create global background pool
         if not self.chrom_specific:
             logger.info(f"  Creating global background pool...")
-            all_mid1 = []
-            all_mid2 = []
-            for chrom_data in self.d2d_by_chr.values():
-                all_mid1.extend(chrom_data['mid1'])
-                all_mid2.extend(chrom_data['mid2'])
-            self.d2d_global = {
-                'mid1': np.array(all_mid1),
-                'mid2': np.array(all_mid2)
-            }
+            all_mid1 = np.concatenate([v['mid1'] for v in self.d2d_by_chr.values()])
+            all_mid2 = np.concatenate([v['mid2'] for v in self.d2d_by_chr.values()])
+            self.d2d_global = {'mid1': all_mid1, 'mid2': all_mid2}
             logger.info(f"  Global background pool: {len(all_mid1):,} PETs")
     
     def process_templates(self, templates_file: str, output_file: str, 
@@ -263,9 +262,9 @@ class BackgroundSamplingPhase1:
         logger.info(f"PROCESSING TEMPLATES")
         logger.info(f"{'='*70}")
         
-        # Load templates
+        # Load templates with Polars then convert to pandas for array indexing
         logger.info(f"  Loading templates from: {templates_file}")
-        templates = pd.read_csv(templates_file)
+        templates = pl.read_csv(templates_file, n_threads=0).to_pandas()
         logger.info(f"  Total templates: {len(templates):,}")
 
         # Prepare arguments for parallel processing
@@ -383,9 +382,9 @@ class BackgroundSamplingPhase1:
             logger.info(f"    Background sampling mean - avg={valid_templates['background_sampling_mean'].mean():.3f}")
             logger.info(f"    Background sampling variance - avg={valid_templates['background_sampling_variance'].mean():.3f}")
         
-        # Save updated templates
+        # Save updated templates with Polars (faster write)
         logger.info(f"\n  Saving updated templates to: {output_file}")
-        templates.to_csv(output_file, index=False)
+        pl.from_pandas(templates).write_csv(output_file)
         
         logger.info(f"\n{'='*70}")
         logger.info(f"PHASE 1 COMPLETE!")

@@ -38,6 +38,7 @@ chr3d bulk-hic \
   --chrom-sizes /path/to/hg38.chrom.sizes \ # Chromosome sizes file (required)
   --output-dir ./results/my_sample \      # Output directory (required)
   --sample-id my_sample \                 # Sample identifier (default: sample)
+  --start-from 1 \                        # Start from step (1-7, default: 1)
   --threads 24 \                          # Total CPU threads (default: 24)
   --splits 6 \                            # Number of parallel chunks (default: 6)
   --assembly hg38 \                       # Genome assembly name (default: hg38)
@@ -62,6 +63,7 @@ chr3d bulk-hic \
 # Sample metadata (can use defaults)
 --sample-id my_sample                     # Default: sample
 --assembly hg38                          # Default: hg38
+--start-from 1                          # Default: 1 (start from beginning)
 
 # Performance tuning (can use defaults)
 --threads 24                            # Default: 24
@@ -110,6 +112,7 @@ chr3d sn-hic \
   --genome /path/to/hg38.fa \            # BWA-indexed genome FASTA (required)
   --chrom-sizes /path/to/hg38.chrom.sizes \ # Chromosome sizes file (required)
   --output-dir ./results/sn_hic \        # Output directory (required)
+  --start-from 1 \                        # Start from step (1-7, default: 1)
   --threads 24 \                         # Total CPU threads (default: 24)
   --min-contacts 1000 \                   # Min contacts per cell (default: 1000)
   --loop-fdr 0.1 \                        # Loop FDR threshold (default: 0.1)
@@ -121,6 +124,7 @@ chr3d sn-hic \
 ### Parameters you can skip (optional)
 ```bash
 --threads 24                            # Default: 24
+--start-from 1                          # Default: 1 (start from beginning)
 --min-contacts 1000                     # Default: 1000
 --loop-fdr 0.1                          # Default: 0.1
 --keep-intermediates                    # Keep temporary files
@@ -152,6 +156,7 @@ chr3d chia-pet \
   --linkers ACGCGATATCGCG \               # Linker sequences (required)
   --output-dir ./results/chiapet \       # Output directory (required)
   --sample-id my_sample \                 # Sample identifier (default: sample)
+  --start-from 1 \                        # Start from step (1-4, default: 1)
   --min-score 30 \                        # Minimum linker score (default: 30)
   --min-tag 5 \                           # Minimum tag count (default: 5)
   --max-tag 100000 \                      # Maximum tag count (default: 100000)
@@ -168,6 +173,7 @@ chr3d chia-pet \
 ### Parameters you can skip (optional)
 ```bash
 --sample-id my_sample                    # Default: sample
+--start-from 1                          # Default: 1 (start from beginning)
 --min-score 30                          # Default: 30
 --min-tag 5                             # Default: 5
 --max-tag 100000                        # Default: 100000
@@ -205,6 +211,7 @@ chr3d hichip \
   --fragments /path/to/hg38_MboI_fragments.bed \ # Fragment BED (required)
   --output-dir ./results/hichip \         # Output directory (required)
   --sample-id my_sample \                 # Sample identifier (default: sample)
+  --start-from 1 \                        # Start from step (1-6, default: 1)
   --threads 24 \                          # Total CPU threads (default: 24)
   --n-chunks 6 \                           # Parallel BWA jobs (default: 6)
   --min-insert 100 \                      # Min insert size bp (default: 100)
@@ -216,6 +223,7 @@ chr3d hichip \
 ### Parameters you can skip (optional)
 ```bash
 --sample-id my_sample                    # Default: sample
+--start-from 1                          # Default: 1 (start from beginning)
 --threads 24                           # Default: 24
 --n-chunks 6                           # Default: 6
 --min-insert 100                       # Default: 100
@@ -268,6 +276,62 @@ chr3d digest \
   --enzyme MboI \
   --enzyme GATC^ \
   --output arima_fragments.bed
+```
+
+---
+
+## 6. Pipeline Resume Feature
+
+### Overview
+All Chr3D pipelines support the `--start-from` parameter, allowing you to resume interrupted runs from any step. This is useful for:
+- Recovering from failed or interrupted runs
+- Re-running specific steps with different parameters
+- Debugging pipeline issues
+
+### Usage
+```bash
+# Resume from step 4 (background model for ChIA-PET)
+chr3d chia-pet --start-from 4 --output-dir ./results [other args]
+
+# Resume from step 3 (peak calling)  
+chr3d bulk-hic --start-from 3 --output-dir ./results [other args]
+```
+
+### Step Numbers by Pipeline
+
+| Pipeline | Steps | Description |
+|----------|-------|-------------|
+| **bulk-hic** | 1-7 | 1: Alignment, 2: SAM/BAM, 3: Pairs, 4: Matrix, 5: TADs, 6: Loops, 7: Compartments |
+| **sn-hic** | 1-7 | 1: Per-cell processing, 2: QC, 3: Pseudobulk, 4: Matrix, 5: TADs, 6: Loops, 7: Clustering |
+| **chia-pet** | 1-4 | 1: Linker filtering, 2: Mapping, 3: Peak calling, 4: Background model |
+| **hichip** | 1-6 | 1: Splitting, 2: Alignment, 3: Merging, 4: Deduplication, 5: MboI purification, 6: Background model |
+
+### Resume Behavior
+- **Skipped steps**: Pipeline infers and uses existing outputs
+- **Required inputs**: When resuming, `--r1`/`--r2` become optional if outputs exist
+- **Output consistency**: Resumed runs use the same output directory structure
+- **Logging**: Each resume run creates a new timestamped log file
+
+### Examples
+```bash
+# Resume ChIA-PET background model (step 4) after fixing an issue
+chr3d chia-pet \
+  --start-from 4 \
+  --output-dir ./results \
+  --sample-id my_sample
+
+# Resume HiChIP from alignment step (step 2) with more threads
+chr3d hichip \
+  --start-from 2 \
+  --threads 48 \
+  --output-dir ./results \
+  --fragments hg38_MboI.bed
+
+# Resume bulk-hic from TAD calling (step 5) with different windows
+chr3d bulk-hic \
+  --start-from 5 \
+  --tad-windows 250000,500000,1000000 \
+  --output-dir ./results
 ```
 
 ---

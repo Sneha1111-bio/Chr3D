@@ -138,6 +138,7 @@ def cmd_bulk_hic(args):
             output_dir=output_dir,
             sample_id=args.sample_id,
             cleanup=not args.keep_intermediates,
+            start_from=args.start_from,
         )
 
         _print_bulk_hic_summary(stats, output_dir, args.sample_id)
@@ -251,6 +252,7 @@ def cmd_sn_hic(args):
             output_dir=str(output_dir),
             run_clustering=False,       # Clustering left for future implementation
             cleanup=not args.keep_intermediates,
+            start_from=args.start_from,
         )
 
         _print_sn_hic_summary(stats, output_dir)
@@ -357,6 +359,7 @@ def cmd_hichip(args):
             fastq_r2=args.r2,
             output_dir=args.output_dir,
             sample_id=args.sample_id,
+            start_from=args.start_from,
         )
         return 0
     except Exception as e:
@@ -419,6 +422,7 @@ def cmd_chia_pet(args):
             fastq_r2=args.r2,
             output_dir=str(output_dir),
             sample_id=args.sample_id,
+            start_from=args.start_from,
         )
 
         _print_chia_pet_summary(stats, output_dir, args.sample_id)
@@ -531,6 +535,15 @@ def _add_common_hic_args(parser):
     out.add_argument('--keep-intermediates', action='store_true',
                      help='Keep intermediate BAM / pairs files (default: delete them)')
 
+    # Resume
+    resume = parser.add_argument_group('resume')
+    resume.add_argument('--start-from', type=int, default=1, choices=range(1, 8),
+                        metavar='STEP',
+                        help='Resume from step N (1-7). 1=alignment, 2=SAM/BAM, '
+                             '3=pairs, 4=matrix, 5=TADs, 6=loops, 7=compartments. '
+                             'Default: 1 (full pipeline). When resuming, prior outputs '
+                             'must exist at canonical paths under --output-dir.')
+
     # Logging
     log = parser.add_argument_group('logging')
     log.add_argument('-v', '--verbose', action='store_true',
@@ -572,10 +585,10 @@ Output layout:
 """,
     )
     inp = bulk.add_argument_group('inputs')
-    inp.add_argument('--r1',        required=True, metavar='FASTQ',
-                     help='R1 FASTQ file (gzipped or plain)')
-    inp.add_argument('--r2',        required=True, metavar='FASTQ',
-                     help='R2 FASTQ file (gzipped or plain)')
+    inp.add_argument('--r1',        metavar='FASTQ',
+                     help='R1 FASTQ file (required unless --start-from > 1)')
+    inp.add_argument('--r2',        metavar='FASTQ',
+                     help='R2 FASTQ file (required unless --start-from > 1)')
     inp.add_argument('--sample-id', default='sample', metavar='STR',
                      help='Sample identifier used in output file names (default: sample)')
     _add_common_hic_args(bulk)
@@ -661,10 +674,10 @@ Output layout:
 """,
     )
     inp = chia.add_argument_group('inputs')
-    inp.add_argument('--r1',        required=True, metavar='FASTQ',
-                     help='R1 FASTQ file (gzipped or plain)')
-    inp.add_argument('--r2',        required=True, metavar='FASTQ',
-                     help='R2 FASTQ file (gzipped or plain)')
+    inp.add_argument('--r1',        metavar='FASTQ',
+                     help='R1 FASTQ file (required unless --start-from > 1)')
+    inp.add_argument('--r2',        metavar='FASTQ',
+                     help='R2 FASTQ file (required unless --start-from > 1)')
     inp.add_argument('--sample-id', default='sample', metavar='STR',
                      help='Sample identifier used in output file names (default: sample)')
     inp.add_argument('--genome',    required=True, metavar='PATH',
@@ -706,6 +719,14 @@ Output layout:
     out.add_argument('--keep-intermediates', action='store_true',
                      help='Keep intermediate BAM files (default: delete)')
 
+    resume = chia.add_argument_group('resume')
+    resume.add_argument('--start-from', type=int, default=1, choices=range(1, 5),
+                        metavar='STEP',
+                        help='Resume from step N (1-4). 1=linker filtering, '
+                             '2=mapping, 3=peak calling, 4=background model / loop calling. '
+                             'Default: 1 (full pipeline). When resuming, outputs from '
+                             'prior steps must exist at canonical paths under --output-dir.')
+
     log = chia.add_argument_group('logging')
     log.add_argument('-v', '--verbose', action='store_true',
                      help='Enable DEBUG-level logging')
@@ -732,10 +753,10 @@ Full HiChIP analysis pipeline:
   5. Background model (randomised PETs, distance decay)
 """,
     )
-    hichip.add_argument('--r1', required=True, metavar='FASTQ',
-                        help='R1 FASTQ file (gzipped or plain)')
-    hichip.add_argument('--r2', required=True, metavar='FASTQ',
-                        help='R2 FASTQ file (gzipped or plain)')
+    hichip.add_argument('--r1', metavar='FASTQ',
+                        help='R1 FASTQ file (required unless --start-from > 1)')
+    hichip.add_argument('--r2', metavar='FASTQ',
+                        help='R2 FASTQ file (required unless --start-from > 1)')
     hichip.add_argument('--genome', required=True, metavar='FASTA',
                         help='BWA-indexed genome FASTA')
     hichip.add_argument('--fragments', required=True, metavar='BED',
@@ -752,6 +773,13 @@ Full HiChIP analysis pipeline:
                         help='Min insert size for MboI purification bp (default: 100)')
     hichip.add_argument('--keep-intermediates', action='store_true',
                         help='Keep per-chunk FASTQ/BAM files after merge')
+    hichip.add_argument('--start-from', type=int, default=1, choices=range(1, 7),
+                        metavar='STEP',
+                        help='Resume from step N (1-6). 1=split FASTQ, 2=align chunks, '
+                             '3=merge BAMs, 4=BAM→BEDPE dedup, 5=MboI purification, '
+                             '6=background model. Default: 1 (full pipeline). When '
+                             'resuming, outputs from prior steps must exist at '
+                             'canonical paths under --output-dir.')
     hichip.add_argument('-v', '--verbose', action='store_true',
                         help='Enable DEBUG-level logging')
     hichip.add_argument('--log-file', metavar='FILE',

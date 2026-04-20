@@ -16,6 +16,7 @@
 """
 
 import logging
+import polars as pl
 import pandas as pd
 import numpy as np
 from statsmodels.stats.multitest import multipletests
@@ -46,7 +47,7 @@ def apply_fdr_corrections(input_file: str, output_file: str, alpha: float = 0.05
     logger.info(f"{'='*70}")
     logger.info(f"  Input file: {input_file}")
     
-    templates = pd.read_csv(input_file)
+    templates = pl.read_csv(input_file, n_threads=0).to_pandas()
     logger.info(f"  Total templates: {len(templates):,}")
     
     # Get p-values — ensure float dtype so np.isnan works
@@ -167,7 +168,7 @@ def apply_fdr_corrections(input_file: str, output_file: str, alpha: float = 0.05
     logger.info(f"{'='*70}")
     logger.info(f"  Output file: {output_file}")
     
-    templates.to_csv(output_file, index=False)
+    pl.from_pandas(templates).write_csv(output_file)
     
     file_size = Path(output_file).stat().st_size / (1024 * 1024)
     logger.info(f"  File size: {file_size:.2f} MB")

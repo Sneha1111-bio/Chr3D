@@ -33,7 +33,8 @@ conda install -c conda-forge -y \
     scipy>=1.7.0 \
     biopython>=1.79 \
     pysam>=0.19.0 \
-    tqdm>=4.62.0
+    tqdm>=4.62.0 \
+    statsmodels
 
 conda install -c bioconda parasail-python -y
 
