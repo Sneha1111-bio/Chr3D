@@ -171,6 +171,13 @@ class HiChIPPipeline:
         genome_fai: Optional[str] = None,
         keep_intermediates: bool = False,
         random_seed: int = 42,
+        # Loop calling parameters (ChIA-PET style background model)
+        genome_size: str = 'hs',
+        qvalue: float = 0.01,
+        alpha: float = 0.05,
+        standard_chroms_only: bool = True,
+        cytoband_file: Optional[str] = None,
+        background_samples: int = 1000,
     ):
         self.genome_index = genome_index
         self.fragment_bed = fragment_bed
@@ -180,6 +187,14 @@ class HiChIPPipeline:
         self.genome_fai = genome_fai or f"{genome_index}.fai"
         self.keep_intermediates = keep_intermediates
         self.random_seed = random_seed
+
+        # Loop calling config
+        self.genome_size = genome_size
+        self.qvalue = qvalue
+        self.alpha = alpha
+        self.standard_chroms_only = standard_chroms_only
+        self.cytoband_file = cytoband_file
+        self.background_samples = background_samples
 
         # Derived: BWA threads per chunk
         self.bwa_threads = max(1, threads // n_chunks)
@@ -257,9 +272,15 @@ class HiChIPPipeline:
         bedpe_dir      = out / "bedpe"
         purified_dir   = out / "purified"
         background_dir = out / "background"
+        peaks_dir      = out / "peaks"
+        loops_dir      = out / "loops"
+        classified_dir = loops_dir / "classified"
+        templates_dir  = loops_dir / "templates"
+        results_dir    = loops_dir / "results"
 
         for d in [splits_dir, aligned_dir, bedpe_dir,
-                  purified_dir, background_dir]:
+                  purified_dir, background_dir,
+                  peaks_dir, classified_dir, templates_dir, results_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         logger.info("=" * 70)
@@ -388,7 +409,7 @@ class HiChIPPipeline:
                     f"Cannot resume from step {start_from}: missing {kept_bedpe}"
                 )
 
-        # ── Step 6: Background model ───────────────────────────────────
+        # ── Step 6: Background model + loop calling ────────────────────
         logger.info("\n[STEP 6] Generating background model...")
         t0 = time.time()
         bg_stats = self._run_background_model(
@@ -401,6 +422,22 @@ class HiChIPPipeline:
             f"  Mean distance   : {bg_stats.get('mean_distance', 0):,.0f} bp\n"
             f"  Done in {_fmt_time(timing['background'])}"
         )
+
+        # Loop calling via ChIA-PET-style background model (peaks → classify
+        # → templates → NB sampling → p-values → FDR).
+        logger.info("\n[STEP 6b] Peak calling + loop calling...")
+        t0 = time.time()
+        loop_stats = self._run_loop_calling(
+            kept_bedpe=kept_bedpe,
+            peaks_dir=str(peaks_dir),
+            classified_dir=str(classified_dir),
+            templates_dir=str(templates_dir),
+            results_dir=str(results_dir),
+            sample_id=sample_id,
+        )
+        timing["loop_calling"] = time.time() - t0
+        all_stats["loop_stats"] = loop_stats
+        logger.info(f"  Done in {_fmt_time(timing['loop_calling'])}")
 
         # ── Cleanup intermediates ──────────────────────────────────────
         if not self.keep_intermediates and start_from <= 2:
@@ -630,7 +667,8 @@ class HiChIPPipeline:
                     continue
                 dist = abs(p2 - p1)
                 max_start = chrom_sizes[c1] - dist - 1000
-                if max_start <= 0:
+                # Skip if chromosome is too small to fit the 1000bp margin
+                if max_start < 1000:
                     continue
                 new_p1 = rng.randint(1000, max_start)
                 new_p2 = new_p1 + dist
@@ -685,6 +723,140 @@ class HiChIPPipeline:
         logger.info(f"  Stats: {stats_path}")
         return bg_stats
 
+    def _run_loop_calling(
+        self,
+        kept_bedpe: str,
+        peaks_dir: str,
+        classified_dir: str,
+        templates_dir: str,
+        results_dir: str,
+        sample_id: str,
+    ) -> Dict:
+        """
+        Full loop calling using ChIA-PET-style background model:
+          a. Peak calling from purified BEDPE (MACS3)
+          b. classify_pets + export_by_category → P2P / P2D / D2D files
+          c. extract_templates → templates.csv
+          d. BackgroundSamplingPhase1 → NB parameters
+          e. calculate_pvalues → p-values
+          f. apply_fdr_corrections → significant loops CSV
+        """
+        from .peak_calling import PeakCaller
+        from .background_model import (
+            load_peaks,
+            classify_pets,
+            extract_templates,
+            BackgroundSamplingPhase1,
+            calculate_pvalues,
+            apply_fdr_corrections,
+        )
+        from .background_model.classify_pets import (
+            summarize_classification,
+            export_by_category,
+        )
+
+        stats: Dict = {}
+
+        # --- a: Peak calling on the purified BEDPE (both anchors → BED → MACS3) ---
+        logger.info("  [a] Peak calling (MACS3 on purified BEDPE)...")
+        peak_caller = PeakCaller(
+            genome_size=self.genome_size,
+            qvalue_cutoff=self.qvalue,
+            conda_env=None,
+        )
+        peak_prefix = os.path.join(peaks_dir, sample_id)
+        peak_stats = peak_caller.call_peaks_from_bedpe(
+            bedpe_file=kept_bedpe,
+            output_prefix=peak_prefix,
+            method='BED',
+        )
+        peaks_file = peak_stats.get('peaks_file', '')
+        stats['peak_stats'] = peak_stats
+
+        if not peaks_file or not os.path.exists(peaks_file):
+            logger.warning("  No peaks file found — skipping loop calling")
+            return {'skipped': True, 'reason': 'no peaks file', 'peak_stats': peak_stats}
+        logger.info(f"    Peaks: {peak_stats.get('num_peaks', 'N/A')} at {peaks_file}")
+
+        # --- b: Classify PETs ---
+        logger.info("  [b] Classifying PETs (P2P / P2D / D2D)...")
+        peaks_by_chr, peak_ids_by_chr, peaks_df = load_peaks(
+            peaks_file,
+            standard_chroms_only=self.standard_chroms_only,
+            cytoband_file=self.cytoband_file,
+        )
+
+        pets_df = classify_pets(
+            bedpe_file=kept_bedpe,
+            peaks_by_chr=peaks_by_chr,
+            peak_ids_by_chr=peak_ids_by_chr,
+            peaks_df=peaks_df,
+            n_cores=self.threads,
+        )
+
+        classify_counts = summarize_classification(pets_df)
+        stats['classify'] = classify_counts
+        logger.info(f"    P2P: {classify_counts.get('P2P', 0):,}  "
+                    f"P2D: {classify_counts.get('P2D', 0):,}  "
+                    f"D2D: {classify_counts.get('D2D', 0):,}")
+
+        classify_prefix = os.path.join(classified_dir, sample_id)
+        export_by_category(pets_df, classify_prefix)
+
+        p2p_file = f"{classify_prefix}.P2P_pets.txt"
+        d2d_file = f"{classify_prefix}.D2D_pets.txt"
+
+        # --- c: Extract templates ---
+        logger.info("  [c] Extracting templates from P2P PETs...")
+        templates_csv = os.path.join(templates_dir, f"{sample_id}_templates.csv")
+        extract_templates(
+            p2p_file=p2p_file,
+            peak_file=peaks_file,
+            output_file=templates_csv,
+            standard_chroms_only=self.standard_chroms_only,
+            cytoband_file=self.cytoband_file,
+        )
+        stats['templates_csv'] = templates_csv
+
+        # --- d: Background sampling phase 1 (NB fitting) ---
+        logger.info("  [d] Background sampling phase 1 (NB parameter estimation)...")
+        templates_nb_csv = os.path.join(
+            templates_dir, f"{sample_id}_templates_with_nb.csv"
+        )
+        sampler = BackgroundSamplingPhase1(samples_per_template=self.background_samples, n_cores=self.threads)
+        sampler.load_d2d_pets(d2d_file)
+        sampler.process_templates(
+            templates_file=templates_csv,
+            output_file=templates_nb_csv,
+        )
+        stats['templates_nb_csv'] = templates_nb_csv
+
+        # --- e: Background sampling phase 2 (p-values) ---
+        logger.info("  [e] Calculating p-values (PMF / NB)...")
+        pvalues_csv = os.path.join(
+            templates_dir, f"{sample_id}_templates_with_pvalues.csv"
+        )
+        calculate_pvalues(
+            templates_file=templates_nb_csv,
+            output_file=pvalues_csv,
+        )
+        stats['pvalues_csv'] = pvalues_csv
+
+        # --- f: FDR correction ---
+        logger.info("  [f] Applying FDR correction...")
+        loops_csv = os.path.join(
+            results_dir, f"{sample_id}_significant_loops.csv"
+        )
+        apply_fdr_corrections(
+            input_file=pvalues_csv,
+            output_file=loops_csv,
+            alpha=self.alpha,
+        )
+        stats['loops_csv'] = loops_csv
+        logger.info(f"    Loops output: {loops_csv}")
+
+        return stats
+
     def _cleanup_splits(self, split_dir: str):
         """Remove per-chunk FASTQ and BAM files."""
         import shutil
@@ -701,10 +873,14 @@ class HiChIPPipeline:
         bedpe   = all_stats.get("bedpe_stats", {})
         purify  = all_stats.get("purify_stats", {})
         bg      = all_stats.get("bg_stats", {})
+        loops   = all_stats.get("loop_stats", {})
 
         total_pairs = bedpe.get("total", 0)
         valid_pets  = bedpe.get("valid", 0)
         kept_pets   = purify.get("kept", 0)
+
+        classify    = loops.get("classify", {}) if isinstance(loops, dict) else {}
+        peak_stats  = loops.get("peak_stats", {}) if isinstance(loops, dict) else {}
 
         with open(qc_path, "w") as f:
             f.write(f"sample_id\t{sample_id}\n")
@@ -717,6 +893,11 @@ class HiChIPPipeline:
             f.write(f"same_fragment_pct\t"
                     f"{100*purify.get('removed_same_fragment',0)/max(valid_pets,1):.2f}\n")
             f.write(f"background_pets\t{bg.get('n_background', 0)}\n")
+            f.write(f"peaks_called\t{peak_stats.get('num_peaks', 'N/A')}\n")
+            f.write(f"p2p_pets\t{classify.get('P2P', 0)}\n")
+            f.write(f"p2d_pets\t{classify.get('P2D', 0)}\n")
+            f.write(f"d2d_pets\t{classify.get('D2D', 0)}\n")
+            f.write(f"significant_loops_csv\t{loops.get('loops_csv', 'N/A')}\n")
             for step, secs in timing.items():
                 f.write(f"time_{step}_s\t{secs:.1f}\n")
 

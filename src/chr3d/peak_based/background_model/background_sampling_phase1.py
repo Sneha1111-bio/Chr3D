@@ -37,12 +37,17 @@ def sample_template_background(args):
 
     Args:
         args: Tuple of (template_idx, width1, width2, distance, chrom1, chrom2,
-                       d2d_mid1, d2d_mid2, chrom_length, n_samples)
+                       d2d_mid1, d2d_mid2, chrom_length, n_samples, save_raw_counts)
 
     Returns:
         dict with template_idx, background counts, r, p parameters
     """
-    template_idx, width1, width2, distance, chrom1, chrom2, d2d_mid1, d2d_mid2, chrom_length, n_samples = args
+    # Backwards-compatible unpacking: accept 10- or 11-tuple args.
+    if len(args) == 11:
+        template_idx, width1, width2, distance, chrom1, chrom2, d2d_mid1, d2d_mid2, chrom_length, n_samples, save_raw_counts = args
+    else:
+        template_idx, width1, width2, distance, chrom1, chrom2, d2d_mid1, d2d_mid2, chrom_length, n_samples = args
+        save_raw_counts = False
 
     result = {
         'template_idx': template_idx,
@@ -111,7 +116,11 @@ def sample_template_background(args):
             'r': r,
             'p': p,
             'is_degenerate': is_degenerate,
-            'raw_counts': counts.tolist()
+            # Only serialize raw_counts when explicitly requested. With large
+            # samples_per_template (e.g. 10,000) and millions of templates,
+            # shipping these lists back through the multiprocessing IPC queue
+            # can exhaust system memory and trigger OOM kills.
+            'raw_counts': counts.tolist() if save_raw_counts else []
         })
     
     return result
@@ -300,7 +309,8 @@ class BackgroundSamplingPhase1:
                 d2d_mid1,
                 d2d_mid2,
                 chrom_length,
-                self.samples_per_template
+                self.samples_per_template,
+                save_counts,
             ))
         
         # Process templates in parallel

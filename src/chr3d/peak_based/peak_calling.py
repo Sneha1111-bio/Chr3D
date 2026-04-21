@@ -86,15 +86,17 @@ class PeakCaller:
         logger.info(f"  Input: {bedpe_file}")
         logger.info(f"  Output: {output_bed}")
         
-        # Read BEDPE file (skip comment lines)
-        # Now includes weight column (11 columns total)
+        # Read BEDPE file (skip comment lines). Support both 10-column (HiChIP)
+        # and 11-column (ChIA-PET with weight) formats by reading only the first
+        # 10 required columns.
         df = pd.read_csv(bedpe_file, sep='\t', header=None, comment='#',
+                        usecols=list(range(10)),
                         names=['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2',
-                              'name', 'score', 'strand1', 'strand2', 'weight'])
-        
-        # Filter out any rows with NaN values (malformed lines)
-        df = df.dropna()
-        
+                              'name', 'score', 'strand1', 'strand2'])
+
+        # Drop rows missing any of the required coordinate columns only
+        df = df.dropna(subset=['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2'])
+
         logger.info(f"  Loaded {len(df):,} BEDPE entries")
         
         # Extract both anchors as BED entries
@@ -131,14 +133,15 @@ class PeakCaller:
         """
         logger.info(f"Validating BEDPE file: {bedpe_file}")
         
-        # Read BEDPE file (skip comment lines)
-        # Now includes weight column (11 columns total)
+        # Read BEDPE file (skip comment lines). Support both 10-column (HiChIP)
+        # and 11-column (ChIA-PET with weight) formats.
         df = pd.read_csv(bedpe_file, sep='\t', header=None, comment='#',
+                        usecols=list(range(10)),
                         names=['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2',
-                              'name', 'score', 'strand1', 'strand2', 'weight'])
-        
-        # Filter out any rows with NaN values (malformed lines)
-        df = df.dropna()
+                              'name', 'score', 'strand1', 'strand2'])
+
+        # Drop rows missing any of the required coordinate columns only
+        df = df.dropna(subset=['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2'])
         
         num_entries = len(df)
         logger.info(f"  Found {num_entries:,} BEDPE entries")
