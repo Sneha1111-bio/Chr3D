@@ -6,7 +6,7 @@
 ║  PURPOSE:                                                                    ║
 ║  - Load templates.csv with peak information                                 ║
 ║  - Load D2D PETs for background sampling                                    ║
-║  - For each template: sample background counts (1000 samples)               ║
+║  - For each template: sample background counts (10,000 samples)            ║
 ║  - Fit Negative Binomial distribution to get r and p parameters             ║
 ║  - Update templates.csv with r and p columns                                ║
 ║  - Save per-template background count files (optional)                      ║
@@ -169,7 +169,7 @@ def fit_negative_binomial(counts: np.ndarray) -> Tuple[float, float, bool]:
 class BackgroundSamplingPhase1:
     """Background sampling and NB parameter estimation."""
     
-    def __init__(self, samples_per_template: int = 1000, n_cores: Optional[int] = None, chrom_specific: bool = False):
+    def __init__(self, samples_per_template: int = 10000, n_cores: Optional[int] = None, chrom_specific: bool = False):
         self.samples_per_template = samples_per_template
         self.n_cores = n_cores or mp.cpu_count()
         self.chrom_specific = chrom_specific
@@ -413,8 +413,8 @@ def main():
     parser.add_argument('templates_file', help='Input templates.csv file')
     parser.add_argument('d2d_file', help='Input D2D_pets.txt file')
     parser.add_argument('output_file', help='Output templates.csv file with r and p')
-    parser.add_argument('--samples', type=int, default=1000, 
-                       help='Number of background samples per template (default: 1000)')
+    parser.add_argument('--samples', type=int, default=10000, 
+                       help='Number of background samples per template (default: 10000)')
     parser.add_argument('--cores', type=int, default=None,
                        help='Number of CPU cores (default: all available)')
     parser.add_argument('--save-counts', action='store_true',

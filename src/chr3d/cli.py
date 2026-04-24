@@ -774,8 +774,8 @@ Full HiChIP analysis pipeline:
                         help='Min insert size for MboI purification bp (default: 100)')
     hichip.add_argument('--keep-intermediates', action='store_true',
                         help='Keep per-chunk FASTQ/BAM files after merge')
-    hichip.add_argument('--background-samples', type=int, default=1000, metavar='INT',
-                        help='Background samples per template for loop calling (default: 1000)')
+    hichip.add_argument('--background-samples', type=int, default=10000, metavar='INT',
+                        help='Background samples per template for loop calling (default: 10000)')
     hichip.add_argument('--start-from', type=int, default=1, choices=range(1, 7),
                         metavar='STEP',
                         help='Resume from step N (1-6). 1=split FASTQ, 2=align chunks, '

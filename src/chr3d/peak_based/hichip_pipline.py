@@ -37,6 +37,7 @@ References:
 """
 
 import itertools
+import json
 import os
 import random
 import subprocess
@@ -44,7 +45,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Import system info utility
 from ..utils.system_info import save_system_info
@@ -73,6 +74,92 @@ def _fmt_time(seconds: float) -> str:
         h = int(seconds // 3600)
         m = int((seconds % 3600) // 60)
         return f"{h}h {m}m"
+
+
+def _fmt_int(val: Any) -> str:
+    """Format an integer-like value with thousands separators; 'N/A' otherwise."""
+    if isinstance(val, bool):
+        return str(val)
+    if isinstance(val, int):
+        return f"{val:,}"
+    if isinstance(val, float) and float(val).is_integer():
+        return f"{int(val):,}"
+    return "N/A" if val is None else str(val)
+
+
+def _fmt_pct(numer: Any, denom: Any) -> str:
+    """Return 'xx.xx%' if both are positive numbers; 'N/A' otherwise."""
+    try:
+        n = float(numer)
+        d = float(denom)
+        if d > 0:
+            return f"{100 * n / d:.2f}%"
+    except (TypeError, ValueError):
+        pass
+    return "N/A"
+
+
+def _json_default(obj: Any):
+    """JSON fallback for numpy / defaultdict / Path / set objects."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, set):
+        return list(obj)
+    if hasattr(obj, "keys") and hasattr(obj, "values"):
+        return dict(obj)
+    return str(obj)
+
+
+def _save_step_stats(
+    steps_dir: str,
+    key: str,
+    stats: Any,
+    timing_key: Optional[str] = None,
+    seconds: Optional[float] = None,
+) -> None:
+    """Persist one step's stats (+ timing) to JSON so that a later
+    ``start_from`` resume can reload the values rather than showing N/A."""
+    try:
+        os.makedirs(steps_dir, exist_ok=True)
+        path = os.path.join(steps_dir, f"{key}.json")
+        payload = {key: stats, "timing_key": timing_key, "seconds": seconds}
+        with open(path, "w") as fh:
+            json.dump(payload, fh, default=_json_default, indent=2)
+    except Exception as exc:  # best-effort persistence
+        logger.warning(f"  Could not persist {key} to {steps_dir}: {exc}")
+
+
+def _load_prior_steps(steps_dir: str) -> Dict[str, Any]:
+    """Load any previously-saved per-step JSONs back into a dict."""
+    out: Dict[str, Any] = {"timing": {}}
+    if not os.path.isdir(steps_dir):
+        return out
+    for fname in os.listdir(steps_dir):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(steps_dir, fname)
+        try:
+            with open(path) as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            logger.warning(f"  Ignoring unreadable step file {path}: {exc}")
+            continue
+        key = fname[: -len(".json")]
+        if isinstance(payload, dict) and key in payload:
+            out[key] = payload[key]
+            tkey = payload.get("timing_key")
+            secs = payload.get("seconds")
+            if tkey and isinstance(secs, (int, float)):
+                out["timing"][tkey] = float(secs)
+        else:
+            out[key] = payload
+    return out
 
 
 # ─── sanity checks ────────────────────────────────────────────────────────────
@@ -177,7 +264,7 @@ class HiChIPPipeline:
         alpha: float = 0.05,
         standard_chroms_only: bool = True,
         cytoband_file: Optional[str] = None,
-        background_samples: int = 1000,
+        background_samples: int = 10000,
     ):
         self.genome_index = genome_index
         self.fragment_bed = fragment_bed
@@ -262,7 +349,9 @@ class HiChIPPipeline:
         # Capture system configuration before pipeline starts
         out = Path(output_dir)
         qc_dir = out / "qc"
+        steps_dir = qc_dir / "steps"
         qc_dir.mkdir(parents=True, exist_ok=True)
+        steps_dir.mkdir(parents=True, exist_ok=True)
         system_info_path = qc_dir / "system_configuration.txt"
         save_system_info(str(system_info_path))
         logger.info(f"System configuration saved to {system_info_path}")
@@ -297,8 +386,21 @@ class HiChIPPipeline:
         logger.info(f"  Start from   : step {start_from}")
         logger.info("=" * 70)
 
-        timing = {}
-        all_stats = {"sample_id": sample_id, "start_from": start_from}
+        timing: Dict[str, float] = {}
+        all_stats: Dict[str, Any] = {"sample_id": sample_id, "start_from": start_from}
+
+        # Reload any previously-persisted per-step stats so that resuming
+        # does not wipe values produced by earlier runs.
+        prior = _load_prior_steps(str(steps_dir))
+        for key in ("split_stats", "bedpe_stats", "purify_stats",
+                    "bg_stats", "loop_stats"):
+            if key in prior:
+                all_stats[key] = prior[key]
+        if "n_chunks" in prior:
+            all_stats["n_chunks"] = prior["n_chunks"]
+        for step, secs in prior.get("timing", {}).items():
+            if step != "total":
+                timing[step] = secs
 
         merged_bam  = str(aligned_dir / f"{sample_id}.namesorted.bam")
         dedup_bedpe = str(bedpe_dir / f"{sample_id}.dedup.bedpe")
@@ -311,6 +413,13 @@ class HiChIPPipeline:
             chunks = self._split_fastq(fastq_r1, fastq_r2, str(splits_dir))
             timing["split"] = time.time() - t0
             all_stats["n_chunks"] = len(chunks)
+            _save_step_stats(
+                str(steps_dir), "split_stats",
+                {"n_chunks": len(chunks)},
+                timing_key="split", seconds=timing["split"],
+            )
+            # Also persist n_chunks standalone for convenience.
+            _save_step_stats(str(steps_dir), "n_chunks", len(chunks))
             logger.info(f"  {len(chunks)} chunks in {_fmt_time(timing['split'])}")
         else:
             logger.info("\n[STEP 1] SKIPPED (resume mode)")
@@ -351,6 +460,10 @@ class HiChIPPipeline:
             bedpe_stats = self._bam_to_dedup_bedpe(merged_bam, dedup_bedpe)
             timing["bedpe"] = time.time() - t0
             all_stats["bedpe_stats"] = bedpe_stats
+            _save_step_stats(
+                str(steps_dir), "bedpe_stats", bedpe_stats,
+                timing_key="bedpe", seconds=timing["bedpe"],
+            )
 
             bedpe_warns = _sanity_check_bedpe(
                 bedpe_stats["valid"], bedpe_stats["total"], bedpe_stats["unmapped"]
@@ -384,6 +497,10 @@ class HiChIPPipeline:
             )
             timing["purification"] = time.time() - t0
             all_stats["purify_stats"] = purify_stats
+            _save_step_stats(
+                str(steps_dir), "purify_stats", purify_stats,
+                timing_key="purification", seconds=timing["purification"],
+            )
 
             purify_warns = _sanity_check_purification(purify_stats, sample_id)
             for w in purify_warns:
@@ -417,6 +534,10 @@ class HiChIPPipeline:
         )
         timing["background"] = time.time() - t0
         all_stats["bg_stats"] = bg_stats
+        _save_step_stats(
+            str(steps_dir), "bg_stats", bg_stats,
+            timing_key="background", seconds=timing["background"],
+        )
         logger.info(
             f"  Background PETs : {bg_stats['n_background']:,}\n"
             f"  Mean distance   : {bg_stats.get('mean_distance', 0):,.0f} bp\n"
@@ -437,6 +558,10 @@ class HiChIPPipeline:
         )
         timing["loop_calling"] = time.time() - t0
         all_stats["loop_stats"] = loop_stats
+        _save_step_stats(
+            str(steps_dir), "loop_stats", loop_stats,
+            timing_key="loop_calling", seconds=timing["loop_calling"],
+        )
         logger.info(f"  Done in {_fmt_time(timing['loop_calling'])}")
 
         # ── Cleanup intermediates ──────────────────────────────────────
@@ -867,41 +992,101 @@ class HiChIPPipeline:
     def _write_qc_report(
         self, all_stats: Dict, qc_dir: str, sample_id: str
     ):
-        """Write a tab-separated QC summary."""
-        qc_path = os.path.join(qc_dir, f"{sample_id}.hichip_qc.txt")
-        timing  = all_stats.get("timing", {})
-        bedpe   = all_stats.get("bedpe_stats", {})
-        purify  = all_stats.get("purify_stats", {})
-        bg      = all_stats.get("bg_stats", {})
-        loops   = all_stats.get("loop_stats", {})
+        """Write a tab-separated QC summary (txt) plus a structured JSON."""
+        qc_path   = os.path.join(qc_dir, f"{sample_id}.hichip_qc.txt")
+        json_path = os.path.join(qc_dir, f"{sample_id}.hichip_qc.json")
+        timing  = all_stats.get("timing", {}) or {}
+        bedpe   = all_stats.get("bedpe_stats", {}) or {}
+        purify  = all_stats.get("purify_stats", {}) or {}
+        bg      = all_stats.get("bg_stats", {}) or {}
+        loops   = all_stats.get("loop_stats", {}) or {}
 
-        total_pairs = bedpe.get("total", 0)
-        valid_pets  = bedpe.get("valid", 0)
-        kept_pets   = purify.get("kept", 0)
+        total_pairs = bedpe.get("total")
+        valid_pets  = bedpe.get("valid")
+        kept_pets   = purify.get("kept")
 
-        classify    = loops.get("classify", {}) if isinstance(loops, dict) else {}
-        peak_stats  = loops.get("peak_stats", {}) if isinstance(loops, dict) else {}
+        classify   = loops.get("classify", {}) if isinstance(loops, dict) else {}
+        peak_stats = loops.get("peak_stats", {}) if isinstance(loops, dict) else {}
 
+        # --- txt (tab-separated, one metric per row) -----------------------
         with open(qc_path, "w") as f:
             f.write(f"sample_id\t{sample_id}\n")
-            f.write(f"total_read_pairs\t{total_pairs}\n")
-            f.write(f"valid_pets_after_dedup\t{valid_pets}\n")
-            f.write(f"valid_pet_pct\t{100*valid_pets/max(total_pairs,1):.2f}\n")
-            f.write(f"kept_after_purification\t{kept_pets}\n")
+            f.write(f"total_read_pairs\t{_fmt_int(total_pairs)}\n")
+            f.write(f"valid_pets_after_dedup\t{_fmt_int(valid_pets)}\n")
+            f.write(f"valid_pet_pct\t{_fmt_pct(valid_pets, total_pairs)}\n")
+            f.write(f"kept_after_purification\t{_fmt_int(kept_pets)}\n")
             f.write(f"purification_retention_pct\t"
-                    f"{100*kept_pets/max(valid_pets,1):.2f}\n")
+                    f"{_fmt_pct(kept_pets, valid_pets)}\n")
             f.write(f"same_fragment_pct\t"
-                    f"{100*purify.get('removed_same_fragment',0)/max(valid_pets,1):.2f}\n")
-            f.write(f"background_pets\t{bg.get('n_background', 0)}\n")
-            f.write(f"peaks_called\t{peak_stats.get('num_peaks', 'N/A')}\n")
-            f.write(f"p2p_pets\t{classify.get('P2P', 0)}\n")
-            f.write(f"p2d_pets\t{classify.get('P2D', 0)}\n")
-            f.write(f"d2d_pets\t{classify.get('D2D', 0)}\n")
+                    f"{_fmt_pct(purify.get('removed_same_fragment'), valid_pets)}\n")
+            f.write(f"background_pets\t{_fmt_int(bg.get('n_background'))}\n")
+            f.write(f"peaks_called\t{_fmt_int(peak_stats.get('num_peaks'))}\n")
+            f.write(f"p2p_pets\t{_fmt_int(classify.get('P2P'))}\n")
+            f.write(f"p2d_pets\t{_fmt_int(classify.get('P2D'))}\n")
+            f.write(f"d2d_pets\t{_fmt_int(classify.get('D2D'))}\n")
             f.write(f"significant_loops_csv\t{loops.get('loops_csv', 'N/A')}\n")
             for step, secs in timing.items():
-                f.write(f"time_{step}_s\t{secs:.1f}\n")
+                try:
+                    f.write(f"time_{step}_s\t{float(secs):.1f}\n")
+                except (TypeError, ValueError):
+                    f.write(f"time_{step}_s\tN/A\n")
+
+        # --- json (easily fetched programmatically) ------------------------
+        def _safe_pct(n, d):
+            try:
+                n, d = float(n), float(d)
+                if d > 0:
+                    return round(100.0 * n / d, 4)
+            except (TypeError, ValueError):
+                pass
+            return None
+
+        summary = {
+            "sample_id": sample_id,
+            "bedpe": {
+                "total_read_pairs":       total_pairs,
+                "valid_pets_after_dedup": valid_pets,
+                "unmapped":               bedpe.get("unmapped"),
+                "duplicates":             bedpe.get("duplicates"),
+                "valid_pet_pct":          _safe_pct(valid_pets, total_pairs),
+            },
+            "purification": {
+                "total_input":               purify.get("total"),
+                "kept_after_purification":   kept_pets,
+                "removed_same_fragment":     purify.get("removed_same_fragment"),
+                "removed_unmappable":        purify.get("removed_unmappable"),
+                "removed_short_insert":      purify.get("removed_short_insert"),
+                "purification_retention_pct": _safe_pct(kept_pets, valid_pets),
+                "same_fragment_pct":         _safe_pct(purify.get("removed_same_fragment"),
+                                                       valid_pets),
+            },
+            "background": {
+                "background_pets": bg.get("n_background"),
+                "mean_distance":   bg.get("mean_distance"),
+            },
+            "loop_calling": {
+                "peaks_called":         peak_stats.get("num_peaks"),
+                "peaks_file":           peak_stats.get("peaks_file"),
+                "p2p_pets":             classify.get("P2P"),
+                "p2d_pets":             classify.get("P2D"),
+                "d2d_pets":             classify.get("D2D"),
+                "templates_csv":        loops.get("templates_csv"),
+                "significant_loops_csv": loops.get("loops_csv"),
+            },
+            "timing_seconds": {k: float(v) for k, v in timing.items()
+                                if isinstance(v, (int, float))},
+            "raw_stats": {
+                "bedpe_stats":   bedpe,
+                "purify_stats":  purify,
+                "bg_stats":      bg,
+                "loop_stats":    loops,
+            },
+        }
+        with open(json_path, "w") as f:
+            json.dump(summary, f, default=_json_default, indent=2)
 
         logger.info(f"  QC report: {qc_path}")
+        logger.info(f"  QC JSON  : {json_path}")
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
