@@ -23,6 +23,78 @@ warnings.filterwarnings('ignore')
 logger = get_logger(__name__)
 
 
+# ------------------------------------------------------------------
+# Pandas 3.0 compatibility patch for cooltools 0.7.1
+# ------------------------------------------------------------------
+# cooltools 0.7.1's ``determine_thresholds`` calls ``DataFrame.idxmin()``
+# on masked FDR differences.  When no pixels pass the FDR threshold the
+# result is all-NaN.  In pandas < 3.0 ``idxmin()`` returns NaN (which
+# ``fillna()`` then handles); in pandas >= 3.0 it raises ValueError.
+# We monkey-patch the function so that loop calling works with newer
+# pandas.
+# ------------------------------------------------------------------
+
+
+def _patch_cooltools_for_pandas3():
+    """Apply pandas >= 3.0 compatibility patch to cooltools.dotfinder."""
+    try:
+        from cooltools.api import dotfinder as _df
+        from scipy.stats import poisson
+    except ImportError:
+        return  # cooltools not installed; nothing to patch
+
+    if hasattr(_df, '_chr3d_patched'):
+        return  # already patched
+
+    _orig = _df.determine_thresholds
+
+    def _patched_determine_thresholds(gw_hist, fdr):
+        """Patched determine_thresholds that handles all-NaN in idxmin()."""
+        qvalues = {}
+        threshold_df = {}
+        for k, _hist in gw_hist.items():
+            rcs_hist = _hist.iloc[::-1].cumsum(axis=0).iloc[::-1]
+            norm = rcs_hist.iloc[0, :]
+            unit_Poisson = pd.DataFrame().reindex_like(rcs_hist)
+            for lbin in rcs_hist.columns:
+                _occurances = rcs_hist.index.to_numpy()
+                unit_Poisson[lbin] = poisson.sf(_occurances, lbin.right)
+            unit_Poisson = norm * unit_Poisson
+
+            _high_value = rcs_hist.index.max() + 1
+            fdr_diff = ((fdr * rcs_hist) - unit_Poisson).cummax()
+            masked = fdr_diff.mask(fdr_diff < 0)
+
+            # pandas >= 3.0 raises ValueError on all-NaN idxmin();
+            # catch it and fall back to _high_value (no pixels pass FDR).
+            try:
+                result = masked.idxmin()
+            except ValueError:
+                # All columns are NaN — no pixels pass the FDR threshold
+                result = pd.Series(
+                    _high_value, index=masked.columns, dtype=np.int64
+                )
+            else:
+                result = result.fillna(_high_value).astype(np.int64)
+
+            threshold_df[k] = result
+            # cast categorical index of dtype-interval to proper interval index
+            threshold_df[k].index = pd.IntervalIndex(threshold_df[k].index)
+
+            qvalues[k] = (unit_Poisson / rcs_hist).cummin()
+            qvalues[k] = qvalues[k].mask(qvalues[k] > 1.0, 1.0)
+
+        return threshold_df, qvalues
+
+    _df.determine_thresholds = _patched_determine_thresholds
+    _df._chr3d_patched = True
+    logger.debug("Patched cooltools.dotfinder.determine_thresholds for pandas >= 3.0")
+
+
+# Apply patch at import time
+_patch_cooltools_for_pandas3()
+
+
 # Resolutions suitable for loop calling (loops are typically 5-25 kb features)
 DEFAULT_LOOP_RESOLUTIONS = [5_000, 10_000, 25_000]
 
@@ -53,9 +125,12 @@ class HiCLoopCaller:
         resolutions: Optional[List[int]] = None,
         fdr: float = 0.1,
         min_dist: int = 5_000,
-        max_dist: int = 2_000_000,
+        max_dist: int = 10_000_000,
         threads: int = 1,
         ignore_diags: int = 2,
+        genome: Optional[str] = "hg38",
+        clustering_radius: Optional[int] = 10_000,
+        cluster_filtering: bool = True,
     ):
         """
         Args:
@@ -63,9 +138,15 @@ class HiCLoopCaller:
                          Default: [5000, 10000, 25000].
             fdr: FDR threshold for loop significance (default: 0.1).
             min_dist: Minimum loop distance in bp (default: 5000).
-            max_dist: Maximum loop distance in bp (default: 2_000_000).
+            max_dist: Maximum loop distance in bp (default: 10_000_000).
             threads: Threads for cooltools (default: 1).
             ignore_diags: Diagonals to ignore (default: 2).
+            genome: UCSC genome name for chromsizes + centromeres
+                    (default: 'hg38'). Set None to use cooler chromsizes.
+            clustering_radius: Cluster nearby enriched pixels and pick
+                    centroid (default: 10_000). Set None to return all
+                    enriched pixels (no clustering).
+            cluster_filtering: Filter spurious clusters (default: True).
         """
         self.resolutions = resolutions or DEFAULT_LOOP_RESOLUTIONS
         self.fdr = fdr
@@ -73,6 +154,9 @@ class HiCLoopCaller:
         self.max_dist = max_dist
         self.threads = threads
         self.ignore_diags = ignore_diags
+        self.genome = genome
+        self.clustering_radius = clustering_radius
+        self.cluster_filtering = cluster_filtering
 
     # ------------------------------------------------------------------
     # Public API
@@ -109,6 +193,9 @@ class HiCLoopCaller:
                 f"Missing dependency for loop calling: {exc}. "
                 "Install with: conda install -c bioconda cooltools cooler bioframe"
             ) from exc
+
+        # Ensure the pandas >= 3.0 compatibility patch is active
+        _patch_cooltools_for_pandas3()
 
         t0 = time.time()
         output_dir = Path(output_dir)
@@ -223,13 +310,43 @@ class HiCLoopCaller:
             uri = self._cooler_uri(mcool_file, res)
             clr = cooler.Cooler(uri)
 
-            # Build view with chromosomes large enough for meaningful loops
-            chromsizes = clr.chromsizes
-            safe_chroms = chromsizes[chromsizes >= self.min_dist * 10]
-            if len(safe_chroms) == 0:
+            # Build genomic view (chromosome arms) for loop calling.
+            # Using chromosome arms (split at centromeres) is the recommended
+            # approach for cooltools dots() — it avoids artefacts from
+            # centromeric regions and ensures view_df compatibility.
+            if self.genome is not None:
+                chromsizes = bioframe.fetch_chromsizes(self.genome)
+                cens = bioframe.fetch_centromeres(self.genome)
+                arms = bioframe.make_chromarms(chromsizes, cens)
+                # Keep only standard chromosomes (chr1-22, chrX, chrY)
+                # present in the cooler — decoy/ALT/HLA contigs cause
+                # NaN in the expected matrix and errors in dots().
+                std_chroms = [
+                    c for c in clr.chromnames
+                    if c.startswith('chr') and c.lstrip('chr') in
+                    {str(i) for i in range(1, 23)} | {'X', 'Y'}
+                ]
+                arms = arms[arms['chrom'].isin(std_chroms)].copy()
+            else:
+                # Fallback: build view from cooler, standard chroms only
+                cs = clr.chromsizes
+                std = cs[
+                    cs.index.str.match(r'^chr[0-9XY]+$')
+                    & (cs >= self.min_dist * 10)
+                ]
+                arms = bioframe.make_viewframe(std)
+
+            if len(arms) == 0:
                 raise ValueError("No chromosomes large enough for loop calling")
 
-            view_df = bioframe.make_viewframe(safe_chroms)
+            # Sort arms to match cooler chromosome order (required by cooltools)
+            chrom_order = {c: i for i, c in enumerate(clr.chromnames)}
+            arms['_sort'] = arms['chrom'].map(chrom_order)
+            arms = arms.sort_values(['_sort', 'start']).drop(
+                columns=['_sort']
+            ).reset_index(drop=True)
+
+            view_df = arms
 
             # Step A: compute expected cis contacts
             expected = cooltools.expected_cis(
@@ -240,11 +357,17 @@ class HiCLoopCaller:
             )
 
             # Step B: call dots (loops)
+            # NOTE: cooltools.dots() does not accept ignore_diags in v0.7.1;
+            # diagonal filtering is already encoded in the `expected` output
+            # from expected_cis() above.
             dots = cooltools.dots(
                 clr,
                 expected=expected,
                 view_df=view_df,
-                ignore_diags=self.ignore_diags,
+                max_loci_separation=self.max_dist,
+                clustering_radius=self.clustering_radius,
+                cluster_filtering=self.cluster_filtering
+                    if self.clustering_radius is not None else None,
                 nproc=self.threads,
             )
 

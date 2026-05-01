@@ -499,11 +499,13 @@ class HiCPairsProcessor:
         os.makedirs(os.path.dirname(output_pairs) or '.', exist_ok=True)
         
         stats_opt = f"--output-stats {stats_file}" if stats_file else ""
-        chroms_src = self.fragment_bed if self.fragment_bed else self.chrom_sizes
-        walks_opt  = "--walks-policy all" if self.fragment_bed else ""
+        # --chroms-path must be a chrom.sizes file, NEVER a fragment BED.
+        # Fragment-aware annotation is done via `pairtools restrict` (see
+        # HiCPairsProcessor.restrict / the pipeline process_pairs step).
+        walks_opt = "--walks-policy all --max-inter-align-gap 20" if self.fragment_bed else ""
         cmd = f"""pairtools parse \
             --assembly {self.assembly} \
-            --chroms-path {chroms_src} \
+            --chroms-path {self.chrom_sizes} \
             --nproc-in {self.threads} \
             --nproc-out {self.threads} \
             --output {output_pairs} \
@@ -514,6 +516,37 @@ class HiCPairsProcessor:
         _run_command(cmd)
         
         return {'output_pairs': output_pairs, 'stats_file': stats_file}
+    
+    def restrict(self,
+                 input_pairs: str,
+                 output_pairs: str) -> Dict[str, Any]:
+        """
+        Annotate restriction fragments on a pairs file.
+        
+        Requires ``fragment_bed`` to have been set at construction.
+        Adds rfrag1/rfrag2 columns so downstream tools can filter
+        same-fragment (self-ligation) pairs.
+        """
+        if not self.fragment_bed:
+            raise RuntimeError("restrict() requires fragment_bed to be set on HiCPairsProcessor")
+        
+        logger.info("PAIRTOOLS RESTRICT")
+        logger.info(f"  Input: {input_pairs}")
+        logger.info(f"  Fragments: {self.fragment_bed}")
+        logger.info(f"  Output: {output_pairs}")
+        
+        os.makedirs(os.path.dirname(output_pairs) or '.', exist_ok=True)
+        
+        cmd = f"""pairtools restrict \
+            --frags {self.fragment_bed} \
+            --nproc-in {self.threads} \
+            --nproc-out {self.threads} \
+            --output {output_pairs} \
+            {input_pairs}"""
+        
+        _run_command(cmd)
+        
+        return {'output_pairs': output_pairs}
     
     def sort(self,
              input_pairs: str,
@@ -1142,6 +1175,7 @@ class HiCPipeline:
         os.makedirs(qc_dir, exist_ok=True)
         
         temp_pairs = os.path.join(pairs_dir, f"{sample_id}.temp.pairs.gz")
+        restrict_pairs = os.path.join(pairs_dir, f"{sample_id}.restrict.pairs.gz")
         sorted_pairs = os.path.join(pairs_dir, f"{sample_id}.sorted.pairs.gz")
         dedup_pairs = os.path.join(pairs_dir, f"{sample_id}.dedup.pairs.gz")
         filtered_pairs = os.path.join(pairs_dir, f"{sample_id}.filtered.pairs.gz")
@@ -1150,22 +1184,79 @@ class HiCPipeline:
         dedup_stats = os.path.join(qc_dir, f"{sample_id}_dedup.stats")
         
         # Parse BAM to pairs
-        logger.info("  Parsing BAM to pairs format...")
-        _chroms_src = self.fragment_bed if self.fragment_bed else self.chrom_sizes
-        _walks_opt  = "--walks-policy all" if self.fragment_bed else ""
+        # NOTE: --chroms-path requires a chrom.sizes file (used only to order
+        # chromosomes for mate flipping). It must NEVER be a fragment BED.
+        # For fragment-aware processing we run `pairtools restrict` AFTER parse.
+        # Resume-within-step-3: if the temp pairs file already exists and is
+        # non-trivial, skip parse and reuse it (parse is the most expensive
+        # sub-step; this lets us recover from later sub-step failures).
+        _PARSE_RESUME_MIN_BYTES = 10 * 1024 * 1024  # 10 MB
+        if os.path.exists(temp_pairs) and os.path.getsize(temp_pairs) >= _PARSE_RESUME_MIN_BYTES:
+            logger.info(
+                f"  Skipping `pairtools parse` — reusing existing temp pairs: "
+                f"{temp_pairs} ({os.path.getsize(temp_pairs) / 1e9:.2f} GB)"
+            )
+        else:
+            logger.info("  Parsing BAM to pairs format...")
+            _walks_opt = "--walks-policy all --max-inter-align-gap 20" if self.fragment_bed else ""
+            if self.fragment_bed:
+                logger.info(f"  Walk rescue enabled (fragment-aware). Fragments: {self.fragment_bed}")
+            cmd = f"""pairtools parse \
+                --assembly {self.assembly} \
+                --chroms-path {self.chrom_sizes} \
+                --nproc-in {self.threads} \
+                --nproc-out {self.threads} \
+                --output {temp_pairs} \
+                --output-stats {parse_stats} \
+                {_walks_opt} \
+                {input_bam}"""
+            self._run_command(cmd)
+
+        # Optional: Annotate restriction fragments with `pairtools restrict`.
+        # This adds rfrag1/rfrag2 columns so downstream tools can filter
+        # same-fragment (self-ligation) pairs.
+        #
+        # IMPORTANT: `pairtools restrict` raises KeyError if it encounters a
+        # chromosome in the pairs file that is not present in the fragment BED
+        # (e.g. decoy / ALT / HLA contigs aligned by BWA but not digested).
+        # We therefore first drop pairs whose chroms aren't in the BED using
+        # `pairtools select --chrom-subset`. The chrom.sizes file matches the
+        # BED's chrom set (both come from the same digest reference).
+        sort_input = temp_pairs
         if self.fragment_bed:
-            logger.info(f"  Fragment-aware parsing using: {self.fragment_bed}")
-        cmd = f"""pairtools parse \
-            --assembly {self.assembly} \
-            --chroms-path {_chroms_src} \
-            --nproc-in {self.threads} \
-            --nproc-out {self.threads} \
-            --output {temp_pairs} \
-            --output-stats {parse_stats} \
-            {_walks_opt} \
-            {input_bam}"""
-        self._run_command(cmd)
-        
+            # Step 3a: filter to BED-known chroms (drops decoy/ALT-aligned pairs)
+            chrom_filtered_pairs = os.path.join(
+                pairs_dir, f"{sample_id}.chrom_filtered.pairs.gz"
+            )
+            logger.info(
+                "  Filtering pairs to chroms present in fragment BED "
+                "(drops decoy/ALT/HLA-aligned pairs not in digest)..."
+            )
+            cmd = f"""pairtools select \
+                'True' \
+                --chrom-subset {self.chrom_sizes} \
+                --nproc-in {self.threads} \
+                --nproc-out {self.threads} \
+                -o {chrom_filtered_pairs} \
+                {temp_pairs}"""
+            self._run_command(cmd)
+
+            # Step 3b: annotate restriction fragments
+            logger.info("  Annotating restriction fragments (pairtools restrict)...")
+            cmd = f"""pairtools restrict \
+                --frags {self.fragment_bed} \
+                --nproc-in {self.threads} \
+                --nproc-out {self.threads} \
+                --output {restrict_pairs} \
+                {chrom_filtered_pairs}"""
+            self._run_command(cmd)
+
+            # Drop the intermediate chrom-filtered file once restrict is done
+            if os.path.exists(chrom_filtered_pairs):
+                os.remove(chrom_filtered_pairs)
+
+            sort_input = restrict_pairs
+
         # Sort pairs (use pairs_dir as temp directory to keep all temp files in output)
         logger.info("  Sorting pairs...")
         temp_sort_dir = os.path.join(pairs_dir, 'temp_sort')
@@ -1175,7 +1266,7 @@ class HiCPipeline:
             --nproc-in {self.threads} \
             --nproc-out {self.threads} \
             --output {sorted_pairs} \
-            {temp_pairs}"""
+            {sort_input}"""
         self._run_command(cmd)
         
         # Clean up temp sort directory
@@ -1199,9 +1290,10 @@ class HiCPipeline:
             -o {filtered_pairs} {dedup_pairs}"""
         self._run_command(cmd)
         
-        # Clean up temp file
-        if os.path.exists(temp_pairs):
-            os.remove(temp_pairs)
+        # Clean up temp files
+        for _f in (temp_pairs, restrict_pairs):
+            if os.path.exists(_f):
+                os.remove(_f)
         
         pairs_size = os.path.getsize(filtered_pairs) if os.path.exists(filtered_pairs) else 0
         logger.info(f"  Output pairs: {filtered_pairs} ({pairs_size / 1e6:.2f} MB)")
