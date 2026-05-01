@@ -4,4 +4,5 @@ export default {
   'sn-hic': 'Single-Nucleus Hi-C',
   'peak-based': 'Peak-Based Analysis',
   utils: 'Utilities',
+  cli: 'CLI Reference',
 }
