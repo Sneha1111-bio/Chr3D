@@ -1,0 +1,677 @@
+---
+title: Bulk Hi-C API
+---
+
+import { Callout, Tabs } from 'nextra/components'
+
+# Bulk Hi-C Module (`chr3d.hic`)
+
+Complete Hi-C processing pipeline for bulk (population-level) chromatin interaction data.
+
+<Callout type="info">
+All classes in this module can be imported either from `chr3d` directly or from `chr3d.hic`.
+</Callout>
+
+---
+
+## HiCPipeline
+
+```python
+class chr3d.HiCPipeline(
+    genome_index: str,
+    chrom_sizes: str,
+    threads: int = 1,
+    assembly: str = 'hg38',
+    min_mapq: int = 30,
+    min_distance: int = 1000,
+    resolutions: Optional[List[int]] = None,
+    n_splits: int = 0,
+    call_tads: bool = True,
+    tad_windows: Optional[List[int]] = None,
+    call_loops: bool = True,
+    loop_fdr: float = 0.1,
+    call_compartments: bool = True,
+    compartment_phasing_track: Optional[str] = None,
+    fragment_bed: Optional[str] = None,
+)
+```
+
+Complete Hi-C data processing pipeline orchestrator. Combines all Hi-C processing steps into a single pipeline.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **genome_index** | `str` | Path to BWA-indexed genome FASTA |
+| **chrom_sizes** | `str` | Path to chromosome sizes file |
+| **threads** | `int` | Number of threads for parallel processing (default: 1) |
+| **assembly** | `str` | Genome assembly name (default: `'hg38'`) |
+| **min_mapq** | `int` | Minimum mapping quality (default: 30) |
+| **min_distance** | `int` | Minimum pair distance in bp (default: 1000) |
+| **resolutions** | `Optional[List[int]]` | List of matrix resolutions in bp (default: `[1000, 5000, 10000, 25000, 50000, 100000]`) |
+| **n_splits** | `int` | Split FASTQ into N chunks for parallel alignment; 0 = no splitting (default: 0) |
+| **call_tads** | `bool` | Run TAD/insulation calling after matrix generation (default: `True`) |
+| **tad_windows** | `Optional[List[int]]` | Window sizes in bp for insulation scoring (default: library defaults) |
+| **call_loops** | `bool` | Run loop calling after matrix generation (default: `True`) |
+| **loop_fdr** | `float` | FDR threshold for loop significance (default: 0.1) |
+| **call_compartments** | `bool` | Run A/B compartment calling (default: `True`) |
+| **compartment_phasing_track** | `Optional[str]` | Path to BED file for phasing E1 sign (default: `None`) |
+| **fragment_bed** | `Optional[str]` | Path to restriction fragment BED (default: `None`) |
+
+### Methods
+
+#### run
+
+```python
+def run(
+    self,
+    fastq1: Optional[str] = None,
+    fastq2: Optional[str] = None,
+    output_dir: str = './results',
+    sample_id: str = 'sample',
+    cleanup: bool = False,
+    start_from: int = 1,
+) -> Dict[str, Any]
+```
+
+Run the complete Hi-C pipeline, or resume from a later step.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **fastq1** | `Optional[str]` | Path to R1 FASTQ file |
+| **fastq2** | `Optional[str]` | Path to R2 FASTQ file |
+| **output_dir** | `str` | Output directory (default: `'./results'`) |
+| **sample_id** | `str` | Sample identifier (default: `'sample'`) |
+| **cleanup** | `bool` | Remove intermediate files (default: `False`) |
+| **start_from** | `int` | Step to resume from: 1=alignment, 2=SAM/BAM, 3=pairs, 4=matrix (default: 1) |
+
+**Returns:**
+
+`Dict[str, Any]` containing:
+- `'output_sam'`: Path to aligned SAM file
+- `'sorted_bam'`: Path to sorted BAM file
+- `'filtered_pairs'`: Path to filtered pairs file
+- `'cool_file'`: Path to contact matrix `.cool` file
+- `'mcool_file'`: Path to multi-resolution `.mcool` file
+- `'timing'`: Step-by-step timing breakdown
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+hic = c3d.HiCPipeline(
+    genome_index="/data/genomes/hg38.fa",
+    chrom_sizes="/data/genomes/hg38.chrom.sizes",
+    threads=24
+)
+
+stats = hic.run(
+    fastq1="sample_R1.fastq.gz",
+    fastq2="sample_R2.fastq.gz",
+    output_dir="results/",
+    sample_id="sample1"
+)
+
+print(f"Output mcool: {stats['mcool_file']}")
+```
+
+---
+
+## HiCAligner
+
+```python
+class chr3d.HiCAligner(
+    genome_index: str,
+    threads: int = 1,
+)
+```
+
+Hi-C alignment using BWA MEM with Hi-C specific parameters.
+
+Uses BWA MEM with `-SP5M` flags optimized for Hi-C chimeric reads.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **genome_index** | `str` | Path to BWA-indexed genome FASTA |
+| **threads** | `int` | Number of threads for BWA (default: 1) |
+
+### Methods
+
+#### align
+
+```python
+def align(
+    self,
+    fastq1: str,
+    fastq2: str,
+    output_sam: str,
+    stats_file: Optional[str] = None,
+) -> Dict[str, Any]
+```
+
+Run BWA MEM alignment for Hi-C data.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **fastq1** | `str` | Path to R1 FASTQ file |
+| **fastq2** | `str` | Path to R2 FASTQ file |
+| **output_sam** | `str` | Path to output SAM file |
+| **stats_file** | `Optional[str]` | Optional path to save alignment stats |
+
+**Returns:**
+
+`Dict[str, Any]` with keys:
+- `'output_sam'`: Path to output SAM file
+- `'stats_file'`: Path to stats file
+- `'sam_size_bytes'`: Size of SAM file in bytes
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+aligner = c3d.HiCAligner(
+    genome_index="/data/genomes/hg38.fa",
+    threads=24
+)
+
+stats = aligner.align(
+    fastq1="sample_R1.fastq.gz",
+    fastq2="sample_R2.fastq.gz",
+    output_sam="aligned.sam"
+)
+```
+
+---
+
+## HiCSamProcessor
+
+```python
+class chr3d.HiCSamProcessor(
+    threads: int = 1,
+    min_mapq: int = 30,
+)
+```
+
+SAM/BAM processing for Hi-C data using samtools.
+
+Converts SAM to BAM and sorts by read name (required for pairtools).
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **threads** | `int` | Number of threads for samtools (default: 1) |
+| **min_mapq** | `int` | Minimum mapping quality score (default: 30) |
+
+### Methods
+
+#### process
+
+```python
+def process(
+    self,
+    input_sam: str,
+    output_bam: str,
+    stats_file: Optional[str] = None,
+    keep_unsorted: bool = False,
+) -> Dict[str, Any]
+```
+
+Convert SAM to sorted BAM.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_sam** | `str` | Path to input SAM file |
+| **output_bam** | `str` | Path to output sorted BAM file |
+| **stats_file** | `Optional[str]` | Optional path to save BAM stats |
+| **keep_unsorted** | `bool` | Keep unsorted BAM file (default: `False`) |
+
+**Returns:**
+
+`Dict[str, Any]` with keys:
+- `'output_bam'`: Path to output BAM file
+- `'stats_file'`: Path to stats file
+- `'bam_size_bytes'`: Size of BAM file in bytes
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+processor = c3d.HiCSamProcessor(threads=24, min_mapq=30)
+
+stats = processor.process(
+    input_sam="aligned.sam",
+    output_bam="sorted.bam"
+)
+```
+
+---
+
+## HiCPairsProcessor
+
+```python
+class chr3d.HiCPairsProcessor(
+    chrom_sizes: str,
+    assembly: str = 'hg38',
+    threads: int = 1,
+    fragment_bed: Optional[str] = None,
+)
+```
+
+Hi-C pairs processing using pairtools.
+
+Provides methods for each pairtools step: parse, sort, dedup, filter.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **chrom_sizes** | `str` | Path to chromosome sizes file |
+| **assembly** | `str` | Genome assembly name (default: `'hg38'`) |
+| **threads** | `int` | Number of threads (default: 1) |
+| **fragment_bed** | `Optional[str]` | Path to restriction fragment BED file for fragment-aware pair parsing (default: `None`) |
+
+### Methods
+
+#### parse
+
+```python
+def parse(
+    self,
+    input_bam: str,
+    output_pairs: str,
+    stats_file: Optional[str] = None,
+) -> Dict[str, Any]
+```
+
+Parse BAM to pairs format.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_bam** | `str` | Path to sorted BAM file |
+| **output_pairs** | `str` | Path to output pairs file (`.pairs.gz`) |
+| **stats_file** | `Optional[str]` | Optional path to save parsing stats |
+
+**Returns:**
+
+`Dict[str, Any]` with keys:
+- `'output_pairs'`: Path to output pairs file
+- `'stats_file'`: Path to stats file
+
+#### sort
+
+```python
+def sort(
+    self,
+    input_pairs: str,
+    output_pairs: str,
+    tmp_dir: Optional[str] = None,
+) -> Dict[str, Any]
+```
+
+Sort pairs by genomic position.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_pairs** | `str` | Path to input pairs file |
+| **output_pairs** | `str` | Path to output sorted pairs file |
+| **tmp_dir** | `Optional[str]` | Temporary directory for sorting |
+
+#### dedup
+
+```python
+def dedup(
+    self,
+    input_pairs: str,
+    output_pairs: str,
+    stats_file: Optional[str] = None,
+) -> Dict[str, Any]
+```
+
+Remove PCR duplicates.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_pairs** | `str` | Path to sorted pairs file |
+| **output_pairs** | `str` | Path to output deduplicated pairs file |
+| **stats_file** | `Optional[str]` | Optional path to save dedup stats |
+
+#### filter
+
+```python
+def filter(
+    self,
+    input_pairs: str,
+    output_pairs: str,
+    pair_types: List[str] = None,
+) -> Dict[str, Any]
+```
+
+Filter pairs by pair type.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_pairs** | `str` | Path to deduplicated pairs file |
+| **output_pairs** | `str` | Path to output filtered pairs file |
+| **pair_types** | `List[str]` | List of pair types to keep (default: `['UU', 'UR', 'RU']`) |
+
+#### restrict
+
+```python
+def restrict(
+    self,
+    input_pairs: str,
+    output_pairs: str,
+) -> Dict[str, Any]
+```
+
+Annotate restriction fragments on a pairs file. Requires `fragment_bed` to have been set at construction.
+
+#### process_all
+
+```python
+def process_all(
+    self,
+    input_bam: str,
+    output_dir: str,
+    prefix: str = "sample",
+    cleanup: bool = True,
+) -> Dict[str, Any]
+```
+
+Run all pairtools steps in sequence.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_bam** | `str` | Path to sorted BAM file |
+| **output_dir** | `str` | Output directory |
+| **prefix** | `str` | Output file prefix (default: `'sample'`) |
+| **cleanup** | `bool` | Remove intermediate files (default: `True`) |
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+pairs = c3d.HiCPairsProcessor(
+    chrom_sizes="/data/genomes/hg38.chrom.sizes",
+    assembly="hg38",
+    threads=24
+)
+
+# Run individual steps
+pairs.parse("sorted.bam", "parsed.pairs.gz")
+pairs.sort("parsed.pairs.gz", "sorted.pairs.gz")
+pairs.dedup("sorted.pairs.gz", "dedup.pairs.gz")
+pairs.filter("dedup.pairs.gz", "filtered.pairs.gz")
+
+# Or run all steps at once
+stats = pairs.process_all("sorted.bam", output_dir="results/")
+```
+
+---
+
+## HiCMatrixGenerator
+
+```python
+class chr3d.HiCMatrixGenerator(
+    chrom_sizes: str,
+    assembly: str = 'hg38',
+    threads: int = 1,
+)
+```
+
+Contact matrix generation using cooler.
+
+Creates `.cool` and multi-resolution `.mcool` files from pairs.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **chrom_sizes** | `str` | Path to chromosome sizes file |
+| **assembly** | `str` | Genome assembly name (default: `'hg38'`) |
+| **threads** | `int` | Number of threads (default: 1) |
+
+### Methods
+
+#### create
+
+```python
+def create(
+    self,
+    input_pairs: str,
+    output_cool: str,
+    resolution: int = 1000,
+) -> Dict[str, Any]
+```
+
+Create contact matrix from pairs.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_pairs** | `str` | Path to filtered pairs file |
+| **output_cool** | `str` | Path to output `.cool` file |
+| **resolution** | `int` | Matrix resolution in bp (default: 1000) |
+
+**Returns:**
+
+`Dict[str, Any]` with keys:
+- `'output_cool'`: Path to output `.cool` file
+- `'cool_size_bytes'`: Size of cool file
+- `'resolution'`: Matrix resolution
+- `'num_contacts'`: Number of contacts
+
+#### balance
+
+```python
+def balance(
+    self,
+    input_cool: str,
+    max_iters: int = 200,
+    cis_only: bool = True,
+) -> Dict[str, Any]
+```
+
+Balance contact matrix.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_cool** | `str` | Path to `.cool` file |
+| **max_iters** | `int` | Maximum iterations (default: 200) |
+| **cis_only** | `bool` | Only balance cis contacts (default: `True`) |
+
+#### zoomify
+
+```python
+def zoomify(
+    self,
+    input_cool: str,
+    output_mcool: str,
+    resolutions: List[int] = None,
+) -> Dict[str, Any]
+```
+
+Create multi-resolution `.mcool` file.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **input_cool** | `str` | Path to `.cool` file |
+| **output_mcool** | `str` | Path to output `.mcool` file |
+| **resolutions** | `List[int]` | List of resolutions in bp (default: `[1000, 5000, 10000, 25000, 50000, 100000]`) |
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+matrix = c3d.HiCMatrixGenerator(
+    chrom_sizes="/data/genomes/hg38.chrom.sizes",
+    assembly="hg38",
+    threads=24
+)
+
+# Create contact matrix
+stats = matrix.create(
+    input_pairs="filtered.pairs.gz",
+    output_cool="sample.cool"
+)
+
+# Create multi-resolution matrix
+matrix.zoomify(
+    input_cool="sample.cool",
+    output_mcool="sample.mcool",
+    resolutions=[1000, 5000, 10000, 25000, 50000, 100000]
+)
+```
+
+---
+
+## HiCQCAnalyzer
+
+```python
+class chr3d.HiCQCAnalyzer()
+```
+
+Quality control analyzer for Hi-C data.
+
+Parses and summarizes QC metrics from Hi-C pipeline outputs.
+
+### Methods
+
+#### analyze
+
+```python
+def analyze(
+    self,
+    qc_dir: str,
+    output_dir: str,
+) -> Dict[str, Any]
+```
+
+Analyze QC metrics from pipeline outputs.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **qc_dir** | `str` | Path to QC directory |
+| **output_dir** | `str` | Output directory for summary |
+
+#### parse_alignment_stats
+
+```python
+def parse_alignment_stats(
+    self,
+    stats_file: str,
+) -> Dict[str, Any]
+```
+
+Parse samtools stats output file.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **stats_file** | `str` | Path to samtools stats file |
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+qc = c3d.HiCQCAnalyzer()
+stats = qc.analyze(qc_dir="results/qc", output_dir="results/summary")
+```
+
+---
+
+## FastqSplitter
+
+```python
+class chr3d.FastqSplitter(
+    n_chunks: int = 10,
+    reads_per_chunk: Optional[int] = None,
+)
+```
+
+Split large FASTQ files into smaller chunks for parallel processing.
+
+Useful for processing very large Hi-C datasets by splitting into manageable chunks that can be processed in parallel.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **n_chunks** | `int` | Number of chunks to split into (default: 10) |
+| **reads_per_chunk** | `Optional[int]` | Reads per chunk (overrides `n_chunks` if set) |
+
+### Methods
+
+#### split
+
+```python
+def split(
+    self,
+    fastq1: str,
+    fastq2: str,
+    output_dir: str,
+    prefix: str = "chunk",
+) -> List[Tuple[str, str]]
+```
+
+Split paired FASTQ files into chunks.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **fastq1** | `str` | Path to R1 FASTQ file |
+| **fastq2** | `str` | Path to R2 FASTQ file |
+| **output_dir** | `str` | Output directory for chunks |
+| **prefix** | `str` | Prefix for chunk files (default: `'chunk'`) |
+
+**Returns:**
+
+`List[Tuple[str, str]]` — List of tuples `(chunk_r1, chunk_r2)` paths.
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+splitter = c3d.FastqSplitter(n_chunks=10)
+chunks = splitter.split(
+    fastq1="sample_R1.fastq.gz",
+    fastq2="sample_R2.fastq.gz",
+    output_dir="split_fastq/"
+)
+print(f"Created {len(chunks)} chunk pairs")
+```
