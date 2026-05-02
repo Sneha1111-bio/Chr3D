@@ -323,7 +323,7 @@ class SnHiCPipeline:
         
         # Step 2: SAM/BAM processing
         logger.info(f"    [Cell {cell_id}] Step 2: SAM/BAM processing...")
-        sam_processor = HiCSamProcessor(threads=self.threads)
+        sam_processor = HiCSamProcessor(threads=self.threads, min_mapq=self.min_mapq)
         # Create processed directory and define output BAM path
         processed_dir = os.path.join(output_dir, 'processed')
         os.makedirs(processed_dir, exist_ok=True)

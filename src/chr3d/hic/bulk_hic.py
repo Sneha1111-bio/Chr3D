@@ -344,20 +344,23 @@ class HiCSamProcessor:
         ... )
     """
     
-    def __init__(self, threads: int = 1):
+    def __init__(self, threads: int = 1, min_mapq: int = 30):
         """
         Initialize SAM processor.
         
         Args:
             threads: Number of threads for samtools (default: 1)
+            min_mapq: Minimum mapping quality score (default: 30)
         """
         self.threads = threads
+        self.min_mapq = min_mapq
         
         if not _check_tool('samtools'):
             raise RuntimeError("samtools not found. Install with: conda install -c bioconda samtools")
         
         logger.info("HiCSamProcessor initialized")
         logger.info(f"  Threads: {threads}")
+        logger.info(f"  Min MAPQ: {min_mapq}")
     
     def process(self,
                 input_sam: str,
@@ -387,9 +390,9 @@ class HiCSamProcessor:
         # Temp unsorted BAM
         unsorted_bam = output_bam.replace('.bam', '.unsorted.bam')
         
-        # Convert SAM to BAM
-        cmd = f"samtools view -@ {self.threads} -bS {input_sam} > {unsorted_bam}"
-        _run_command(cmd, "Converting SAM to BAM...")
+        # Convert SAM to BAM with MAPQ filtering
+        cmd = f"samtools view -@ {self.threads} -q {self.min_mapq} -bS {input_sam} > {unsorted_bam}"
+        _run_command(cmd, f"Converting SAM to BAM (MAPQ >= {self.min_mapq})...")
         
         # Sort by read name (required for pairtools)
         cmd = f"samtools sort -@ {self.threads} -n -o {output_bam} {unsorted_bam}"
@@ -1123,9 +1126,9 @@ class HiCPipeline:
         sorted_bam = os.path.join(processed_dir, f"{sample_id}_sorted.bam")
         stats_file = os.path.join(qc_dir, f"{sample_id}_bam.stats")
         
-        # Convert SAM to BAM
-        cmd = f"samtools view -@ {self.threads} -bS {input_sam} > {bam_file}"
-        self._run_command(cmd, "Converting SAM to BAM...")
+        # Convert SAM to BAM with MAPQ filtering
+        cmd = f"samtools view -@ {self.threads} -q {self.min_mapq} -bS {input_sam} > {bam_file}"
+        self._run_command(cmd, f"Converting SAM to BAM (MAPQ >= {self.min_mapq})...")
         
         # Sort by read name (required for pairtools)
         cmd = f"samtools sort -@ {self.threads} -n -o {sorted_bam} {bam_file}"
