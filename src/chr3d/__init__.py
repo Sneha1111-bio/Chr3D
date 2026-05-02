@@ -36,10 +36,15 @@ from .hic import (
 )
 
 # ============================================================================
-# Utilities
+# Utilities (convenience functions + classes)
 # ============================================================================
 
-from .utils.restriction_sites import RestrictionSiteGenerator
+from .utils import (
+    restriction_site_generator,
+    loops_to_beddb,
+    detect_restriction_enzyme,
+    RestrictionSiteGenerator,
+)
 
 __all__ = [
     '__version__',
@@ -56,6 +61,11 @@ __all__ = [
     # ---- sn-Hi-C ----
     'SnHiCPipeline',
 
-    # ---- Utilities ----
+    # ---- Utilities (functions) ----
+    'restriction_site_generator',
+    'loops_to_beddb',
+    'detect_restriction_enzyme',
+
+    # ---- Utilities (classes) ----
     'RestrictionSiteGenerator',
 ]

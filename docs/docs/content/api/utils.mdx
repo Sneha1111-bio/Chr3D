@@ -1,0 +1,503 @@
+---
+title: Utilities API
+---
+
+import { Callout } from 'nextra/components'
+
+# Utilities Module (`chr3d.utils`)
+
+Convenience functions and utilities for common chromatin interaction analysis operations.
+
+---
+
+## RestrictionSiteGenerator
+
+```python
+class chr3d.RestrictionSiteGenerator(
+    enzyme: Union[str, List[str]],
+    min_frag_size: int = 20,
+    max_frag_size: int = 1000000,
+)
+```
+
+Generate restriction fragment coordinates from genome FASTA.
+
+This class parses restriction enzyme recognition sites and scans a genome FASTA file to identify all restriction sites, creating fragments between consecutive cut positions.
+
+<Callout type="info">
+Reference: ChIA-PET Tool V3 Main.java split_genome_byressite()
+</Callout>
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **enzyme** | `Union[str, List[str]]` | Enzyme name (e.g., `'MboI'`) or recognition site (e.g., `'^GATC'`). Can be a list for multiple enzymes. |
+| **min_frag_size** | `int` | Minimum fragment length to keep (default: 20bp) |
+| **max_frag_size** | `int` | Maximum fragment length to keep (default: 1Mb) |
+
+### Class Attributes
+
+#### COMMON_ENZYMES
+
+```python
+RestrictionSiteGenerator.COMMON_ENZYMES = {
+    'MboI': '^GATC',
+    'HindIII': 'A^AGCTT',
+    'DpnII': '^GATC',
+    'BglII': 'A^GATCT',
+    'Sau3AI': '^GATC',
+    'Hinf1': 'G^ANTC',
+    'NlaIII': 'CATG^',
+    'AluI': 'AG^CT',
+    'EcoRI': 'G^AATTC',
+    'BamHI': 'G^GATCC',
+    'PstI': 'CTGCA^G',
+    'SalI': 'G^TCGAC',
+    'XbaI': 'T^CTAGA'
+}
+```
+
+Dictionary of common restriction enzymes and their recognition sites.
+
+### Methods
+
+#### generate_sites
+
+```python
+def generate_sites(
+    self,
+    genome_fasta: str,
+    output_file: str,
+) -> Dict[str, Any]
+```
+
+Generate restriction fragment file from genome FASTA.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **genome_fasta** | `str` | Path to genome FASTA file |
+| **output_file** | `str` | Path to output BED file |
+
+**Returns:**
+
+`Dict[str, Any]` containing:
+- `'total_fragments'`: Total fragments found
+- `'filtered_fragments'`: Fragments filtered by size
+- `'chromosomes'`: Number of chromosomes processed
+- `'total_sites'`: Total restriction sites found
+- `'fragments_by_chr'`: Dictionary mapping chromosome → fragment count
+
+**Example:**
+
+```python
+import chr3d as c3d
+
+# Single enzyme
+generator = c3d.RestrictionSiteGenerator(
+    enzyme="MboI",
+    min_frag_size=20,
+    max_frag_size=1000000
+)
+
+stats = generator.generate_sites(
+    genome_fasta="/data/genomes/hg38.fa",
+    output_file="hg38_MboI_fragments.bed"
+)
+
+print(f"Generated {stats['total_fragments']:,} fragments")
+
+# Multiple enzymes
+generator = c3d.RestrictionSiteGenerator(
+    enzyme=["MboI", "HindIII"]
+)
+```
+
+---
+
+## restriction_site_generator
+
+```python
+chr3d.utils.restriction_site_generator(
+    enzyme: Union[str, List[str]],
+    genome_fasta: str,
+    output_file: str,
+    min_frag_size: int = 20,
+    max_frag_size: int = 1_000_000,
+) -> Dict[str, Any]
+```
+
+Generate restriction fragment BED from a genome FASTA.
+
+One-call wrapper around `RestrictionSiteGenerator`. Convenient function API for generating restriction fragments without instantiating a class.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **enzyme** | `Union[str, List[str]]` | Enzyme name (e.g., `'MboI'`), recognition site (e.g., `'^GATC'`), or list for multiple enzymes |
+| **genome_fasta** | `str` | Path to genome FASTA file (must be indexed with samtools faidx or pyfaidx) |
+| **output_file** | `str` | Path to output fragment BED file |
+| **min_frag_size** | `int` | Minimum fragment length to keep (default: 20 bp) |
+| **max_frag_size** | `int` | Maximum fragment length to keep (default: 1 Mb) |
+
+**Returns:**
+
+`Dict[str, Any]` — Statistics dictionary with fragment counts per chromosome.
+
+**Example:**
+
+```python
+from chr3d.utils import restriction_site_generator
+
+stats = restriction_site_generator(
+    enzyme="MboI",
+    genome_fasta="/data/genomes/hg38.fa",
+    output_file="hg38_MboI_fragments.bed",
+)
+
+print(f"Fragments: {stats['total_fragments']:,}")
+```
+
+---
+
+## loops_to_beddb
+
+```python
+chr3d.utils.loops_to_beddb(
+    loops_csv: str,
+    peaks_path: str,
+    output_bedpe: str,
+    output_bedpedb: str,
+    assembly: str = "hg38",
+    p_value_col: str = "p_adj_fdr_bh",
+    significant_col: str = "significant_fdr_bh",
+    canonical_chroms_only: bool = True,
+    max_score: float = 300.0,
+    chromsizes_path: str = None,
+    skip_verify: bool = False,
+) -> Dict[str, Any]
+```
+
+Convert significant-loops CSV + narrowPeak → BEDPE → bedpedb (HiGlass).
+
+One-call wrapper that chains `csv_to_bedpe`, `bedpe_to_bedpedb`, and optionally `verify_positions`.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **loops_csv** | `str` | Path to significant loops CSV file |
+| **peaks_path** | `str` | Path to narrowPeak file |
+| **output_bedpe** | `str` | Path for intermediate BEDPE output |
+| **output_bedpedb** | `str` | Path for final bedpedb (HiGlass SQLite) output |
+| **assembly** | `str` | Genome assembly name (default: `"hg38"`) |
+| **p_value_col** | `str` | Column name for p-values in loops CSV (default: `"p_adj_fdr_bh"`) |
+| **significant_col** | `str` | Column name for significance flag in loops CSV (default: `"significant_fdr_bh"`) |
+| **canonical_chroms_only** | `bool` | Keep only canonical chromosomes (default: `True`) |
+| **max_score** | `float` | Maximum -log10(p) score (default: 300) |
+| **chromsizes_path** | `str` | Path to chromosome sizes file (needed for verification) |
+| **skip_verify** | `bool` | Skip position verification step (default: `False`) |
+
+**Returns:**
+
+`Dict[str, Any]` — Combined statistics from all conversion steps, plus `"verification_passed"` key if verification was run.
+
+**Example:**
+
+```python
+from chr3d.utils import loops_to_beddb
+
+stats = loops_to_beddb(
+    loops_csv="significant_loops.csv",
+    peaks_path="peaks.narrowPeak",
+    output_bedpe="loops.bedpe",
+    output_bedpedb="loops.bedpedb",
+    chromsizes_path="hg38.chrom.sizes",
+)
+
+print(f"Final loops: {stats['n_final']}")
+print(f"Verification: {stats['verification_passed']}")
+```
+
+---
+
+## csv_to_bedpe
+
+```python
+chr3d.utils.csv_to_bedpe(
+    loops_csv: str,
+    peaks_path: str,
+    output_bedpe: str,
+    p_value_col: str = "p_adj_fdr_bh",
+    significant_col: str = "significant_fdr_bh",
+    canonical_chroms_only: bool = True,
+    max_score: float = 300.0,
+) -> Tuple[pl.DataFrame, dict]
+```
+
+Convert loops CSV → BEDPE with importance score = -log10(p_value).
+
+Uses Polars for fast, multi-threaded data processing. Returns both the final DataFrame and a statistics dictionary. Writes BEDPE to disk.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **loops_csv** | `str` | Path to loops CSV file |
+| **peaks_path** | `str` | Path to narrowPeak file |
+| **output_bedpe** | `str` | Path for output BEDPE file |
+| **p_value_col** | `str` | Column name for p-values (default: `"p_adj_fdr_bh"`) |
+| **significant_col** | `str` | Column name for significance flag (default: `"significant_fdr_bh"`) |
+| **canonical_chroms_only** | `bool` | Filter to canonical chromosomes (default: `True`) |
+| **max_score** | `float` | Maximum -log10(p) score (default: 300) |
+
+**Returns:**
+
+`Tuple[pl.DataFrame, dict]` — `(bedpe_dataframe, stats_dict)`
+
+**Statistics keys:**
+- `'n_peaks'`: Number of peaks loaded
+- `'n_loops_raw'`: Raw loops in CSV
+- `'n_loops_significant'`: Loops passing significance filter
+- `'n_after_join'`: Loops after joining peaks
+- `'n_chrom_mismatch'`: Chromosome mismatches dropped
+- `'n_swapped'`: Pairs reordered (start1 > start2)
+- `'n_final'`: Final BEDPE rows
+- `'total_seconds'`: Processing time
+
+---
+
+## bedpe_to_bedpedb
+
+```python
+chr3d.utils.bedpe_to_bedpedb(
+    bedpe_path: str,
+    output_bedpedb: str,
+    assembly: str = "hg38",
+    importance_col: int = 8,
+    max_per_tile: int = 100,
+    tile_size: int = 1024,
+) -> str
+```
+
+Run `clodius aggregate bedpe` to produce a SQLite bedpedb file.
+
+Converts BEDPE to HiGlass-compatible bedpedb format for visualization as 1D arcs tracks.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **bedpe_path** | `str` | Path to input BEDPE file |
+| **output_bedpedb** | `str` | Path for output bedpedb file |
+| **assembly** | `str` | Genome assembly (default: `"hg38"`) |
+| **importance_col** | `int` | 1-based column index for importance score (default: 8 = score column) |
+| **max_per_tile** | `int` | Maximum entries per tile (default: 100) |
+| **tile_size** | `int` | Tile size in bp (default: 1024) |
+
+**Returns:**
+
+`str` — Path to output bedpedb file.
+
+---
+
+## verify_positions
+
+```python
+chr3d.utils.verify_positions(
+    bedpe_df: pl.DataFrame,
+    bedpedb_path: str,
+    chromsizes_path: str,
+    n_samples: int = 20,
+) -> bool
+```
+
+Verify that bedpedb entries match BEDPE coordinates.
+
+bedpedb stores coordinates as global genome offsets. Re-derives the offset from the chromsizes file and compares to a random sample.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **bedpe_df** | `pl.DataFrame` | Polars DataFrame with BEDPE data |
+| **bedpedb_path** | `str` | Path to bedpedb file |
+| **chromsizes_path** | `str` | Path to chromosome sizes file |
+| **n_samples** | `int` | Number of random entries to verify (default: 20) |
+
+**Returns:**
+
+`bool` — `True` if all samples match, `False` otherwise.
+
+---
+
+## detect_restriction_enzyme
+
+```python
+chr3d.utils.detect_restriction_enzyme(
+    fastq_path: str,
+    max_reads: int = 1_000_000,
+) -> None
+```
+
+Detect which restriction enzyme was used in a Hi-C/HiChIP sample.
+
+Analyzes the first N reads of a paired-end FASTQ to identify which restriction enzyme(s) were used in the library preparation.
+
+<Callout type="info">
+**Logic:**
+1. **Enrichment test** — A restriction-enzyme cut site should appear at the start of reads far more often than at background positions (because biotin pull-down enriches for ligation junctions).
+2. **Junction test** — After fill-in and ligation, two identical overhangs are joined, producing a site+site junction (e.g., `GATCGATC` for MboI). The presence of these junctions at the read start is a definitive signature.
+3. **Positional profile** — The true enzyme shows a characteristic dual-peak pattern: a large peak at position 0 (cut site) and a second peak offset by len(site)+1 bases (partner ligation site).
+</Callout>
+
+<Callout type="warning">
+This tool is designed for **Hi-C** and **in-situ Hi-C** data where reads start at restriction enzyme cut sites. For **HiChIP / ChIA-PET** data, reads start at linker/adapter sequences. Run this tool on *trimmed* reads or after the linker-filtering step for accurate detection.
+</Callout>
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| **fastq_path** | `str` | Path to FASTQ file (R1 recommended) |
+| **max_reads** | `int` | Maximum reads to analyze (default: 1,000,000) |
+
+**Example:**
+
+```python
+from chr3d.utils import detect_restriction_enzyme
+
+# Analyze first 500k reads
+detect_restriction_enzyme(
+    fastq_path="sample_R1.fastq.gz",
+    max_reads=500_000
+)
+
+# Output includes:
+# - Positional profile for each candidate enzyme
+# - Enrichment fold-change at position 0
+# - Junction counts
+# - Recommended enzyme
+```
+
+---
+
+## Background Model Functions
+
+Import from `chr3d.peak_based.background_model`:
+
+### classify_pets
+
+```python
+from chr3d.peak_based.background_model import classify_pets
+
+classify_pets(
+    bedpe_path: str,
+    peaks_by_chr: Dict[str, List[Tuple[int, int]]],
+    peak_ids_by_chr: Dict[str, List[str]],
+    peaks_df: pl.DataFrame,
+) -> pl.DataFrame
+```
+
+Classify PETs by peak overlap (P2P / P2D / D2D).
+
+**Returns:** Polars DataFrame with classified PETs.
+
+### extract_templates
+
+```python
+from chr3d.peak_based.background_model import extract_templates
+
+extract_templates(
+    pets_df: pl.DataFrame,
+) -> List[Dict[str, Any]]
+```
+
+Build templates from cross-peak P2P PETs.
+
+### BackgroundSamplingPhase1
+
+```python
+from chr3d.peak_based.background_model import BackgroundSamplingPhase1
+
+sampler = BackgroundSamplingPhase1(
+    n_bootstrap: int = 1000,
+)
+
+nb_params = sampler.fit(
+    pets_df: pl.DataFrame,
+    templates: List[Dict],
+)
+```
+
+Sample background, fit Negative Binomial distribution.
+
+### calculate_pvalues
+
+```python
+from chr3d.peak_based.background_model import calculate_pvalues
+
+pvals = calculate_pvalues(
+    pets_df: pl.DataFrame,
+    nb_params: Dict,
+    templates: List[Dict],
+)
+```
+
+Compute PMF p-values for PETs.
+
+### apply_fdr_corrections
+
+```python
+from chr3d.peak_based.background_model import apply_fdr_corrections
+
+results = apply_fdr_corrections(
+    pvals: pl.DataFrame,
+    alpha: float = 0.05,
+    method: str = "fdr_bh",
+)
+```
+
+Apply multiple testing correction (Benjamini-Hochberg FDR or Bonferroni).
+
+---
+
+## Complete Workflow Example
+
+```python
+import chr3d as c3d
+from chr3d.utils import restriction_site_generator, loops_to_beddb
+
+# Step 1: Generate restriction fragments
+stats = restriction_site_generator(
+    enzyme="MboI",
+    genome_fasta="/data/genomes/hg38.fa",
+    output_file="hg38_MboI_fragments.bed",
+)
+
+# Step 2: Run Hi-C pipeline
+hic = c3d.HiCPipeline(
+    genome_index="/data/genomes/hg38.fa",
+    chrom_sizes="/data/genomes/hg38.chrom.sizes",
+    threads=24,
+    fragment_bed="hg38_MboI_fragments.bed",  # Enable fragment-aware processing
+)
+
+hic_stats = hic.run(
+    fastq1="sample_R1.fastq.gz",
+    fastq2="sample_R2.fastq.gz",
+    output_dir="results/",
+)
+
+# Step 3: Convert loops to HiGlass format
+loop_stats = loops_to_beddb(
+    loops_csv="results/loops/significant_loops.csv",
+    peaks_path="results/peaks/peaks.narrowPeak",
+    output_bedpe="results/loops/loops.bedpe",
+    output_bedpedb="results/loops/loops.bedpedb",
+    chromsizes_path="/data/genomes/hg38.chrom.sizes",
+)
+```
