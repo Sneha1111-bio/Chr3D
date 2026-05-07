@@ -5,7 +5,7 @@ echo "=========================================="
 echo "Chr3D Pipeline Installation"
 echo "=========================================="
 
-ENV_NAME="chr3d"
+ENV_NAME="updated_chr3d"
 
 echo "[1/7] Configuring conda channels..."
 conda config --add channels defaults

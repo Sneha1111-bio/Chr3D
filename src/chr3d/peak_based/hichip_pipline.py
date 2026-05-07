@@ -919,7 +919,6 @@ class HiChIPPipeline:
                 "unmapped":               bedpe.get("unmapped"),
                 "duplicates":             bedpe.get("duplicates"),
                 "valid_pet_pct":          _fmt_pct(valid_pets, total_pairs),
-                "valid_pet_pct":          _safe_pct(valid_pets, total_pairs),
             },
             "purification": {
                 "total_input":               purify.get("total"),
@@ -927,8 +926,8 @@ class HiChIPPipeline:
                 "removed_same_fragment":     purify.get("removed_same_fragment"),
                 "removed_unmappable":        purify.get("removed_unmappable"),
                 "removed_short_insert":      purify.get("removed_short_insert"),
-                "purification_retention_pct": _safe_pct(kept_pets, valid_pets),
-                "same_fragment_pct":         _safe_pct(purify.get("removed_same_fragment"),
+                "purification_retention_pct": _fmt_pct(kept_pets, valid_pets),
+                "same_fragment_pct":         _fmt_pct(purify.get("removed_same_fragment"),
                                                        valid_pets),
             },
             "background": {

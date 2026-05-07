@@ -92,7 +92,7 @@ class HiCLoopCaller:
         fdr: float = 0.1,
         min_dist: int = 5_000,
         max_dist: int = 10_000_000,
-        threads: int = 1,
+        threads: int = 8,
         ignore_diags: int = 2,
         genome: Optional[str] = "hg38",
         clustering_radius: Optional[int] = 10_000,
