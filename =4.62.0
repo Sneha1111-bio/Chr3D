@@ -2,13 +2,13 @@ Channels:
  - conda-forge
  - bioconda
  - defaults
-Platform: linux-64
+Platform: linux-aarch64
 Collecting package metadata (repodata.json): ...working... done
 Solving environment: ...working... done
 
 ## Package Plan ##
 
-  environment location: /workspace/workdisk3/rudhra/.conda/envs/trial02
+  environment location: /opt/conda/envs/trial02
 
   added / updated specs:
     - biopython
@@ -25,10 +25,16 @@ The following packages will be downloaded:
 
     package                    |            build
     ---------------------------|-----------------
+    _python_abi3_support-1.0   |       hd8ed1ab_2           8 KB  conda-forge
+    cpython-3.12.13            |  py312hd8ed1ab_0          45 KB  conda-forge
+    patsy-1.0.2                |     pyhcf101f3_0         189 KB  conda-forge
     polars-1.40.0              |     pyh58ad624_0         524 KB  conda-forge
-    polars-runtime-32-1.40.0   |  py310hffdcd12_0        40.1 MB  conda-forge
+    polars-runtime-32-1.40.0   |  py310hff09b76_0        36.4 MB  conda-forge
+    python-gil-3.12.13         |       hd8ed1ab_0          45 KB  conda-forge
+    statsmodels-0.14.6         |  py312h5fde510_0        11.3 MB  conda-forge
+    tqdm-4.67.3                |     pyh8f84b5b_0          92 KB  conda-forge
     ------------------------------------------------------------
-                                           Total:        40.6 MB
+                                           Total:        48.6 MB
 
 The following NEW packages will be INSTALLED:
 
@@ -36,19 +42,14 @@ The following NEW packages will be INSTALLED:
   cpython            conda-forge/noarch::cpython-3.12.13-py312hd8ed1ab_0 
   patsy              conda-forge/noarch::patsy-1.0.2-pyhcf101f3_0 
   polars             conda-forge/noarch::polars-1.40.0-pyh58ad624_0 
-  polars-runtime-32  conda-forge/linux-64::polars-runtime-32-1.40.0-py310hffdcd12_0 
+  polars-runtime-32  conda-forge/linux-aarch64::polars-runtime-32-1.40.0-py310hff09b76_0 
   python-gil         conda-forge/noarch::python-gil-3.12.13-hd8ed1ab_0 
-  statsmodels        conda-forge/linux-64::statsmodels-0.14.6-py312h4f23490_0 
+  statsmodels        conda-forge/linux-aarch64::statsmodels-0.14.6-py312h5fde510_0 
   tqdm               conda-forge/noarch::tqdm-4.67.3-pyh8f84b5b_0 
 
 
 
-Downloading and Extracting Packages: ...working...polars-runtime-32-1. | 40.1 MB   |            |   0% 
-polars-1.40.0        | 524 KB    |            |   0% [A
-polars-1.40.0        | 524 KB    | ########## | 100% [Apolars-runtime-32-1. | 40.1 MB   | 3          |   4% 
-polars-1.40.0        | 524 KB    | ########## | 100% [A
-polars-1.40.0        | 524 KB    | ########## | 100% [Apolars-runtime-32-1. | 40.1 MB   | ##7        |  28% polars-runtime-32-1. | 40.1 MB   | #####1     |  51% polars-runtime-32-1. | 40.1 MB   | #######5   |  75% polars-runtime-32-1. | 40.1 MB   | #########9 |  99% polars-runtime-32-1. | 40.1 MB   | ########## | 100% polars-runtime-32-1. | 40.1 MB   | ########## | 100%                                                      
-                                                     [A done
-Preparing transaction: - done
-Verifying transaction: | / - \ | / - \ | / done
-Executing transaction: \ | / - \ | / - \ | / - \ | / - \ | / - \ | / done
+Downloading and Extracting Packages: ...working... done
+Preparing transaction: ...working... done
+Verifying transaction: ...working... done
+Executing transaction: ...working... done

@@ -5,7 +5,7 @@ echo "=========================================="
 echo "Chr3D Pipeline Installation"
 echo "=========================================="
 
-ENV_NAME="trial02"
+ENV_NAME="chr3d"
 
 echo "[1/7] Configuring conda channels..."
 conda config --add channels defaults
@@ -43,6 +43,7 @@ conda install -c bioconda parasail-python -y
 
 echo "[6/7] Installing additional Python packages (pip)..."
 pip install clodius
+pip install higlass-python
 
 echo "[7/7] Installing Chr3D package (editable mode)..."
 cd "$(dirname "$0")"
@@ -56,16 +57,16 @@ print(f'  chr3d version: {c3d.__version__}')
 print(f'  Available: {\", \".join([x for x in dir(c3d) if not x.startswith(\"_\")])}')
 " && echo "  ✓ Chr3D package installed successfully" || echo "  ✗ Chr3D package installation FAILED"
 
-# Verify external tools
-echo ""
-echo "Verifying external tools..."
-for tool in bwa samtools macs3 pairtools cooler cooltools; do
-    if command -v $tool &> /dev/null; then
-        echo "  ✓ $tool"
-    else
-        echo "  ✗ $tool not found"
-    fi
-done
+# # Verify external tools
+# echo ""
+# echo "Verifying external tools..."
+# for tool in bwa samtools macs3 pairtools cooler cooltools; do
+#     if command -v $tool &> /dev/null; then
+#         echo "  ✓ $tool"
+#     else
+#         echo "  ✗ $tool not found"
+#     fi
+# done
 
 echo ""
 echo "=========================================="
@@ -73,18 +74,5 @@ echo "Installation Complete!"
 echo "=========================================="
 echo ""
 echo "To use Chr3D:"
-echo "  1. Activate environment: conda activate $ENV_NAME"
-echo "  2. Run pipeline: chr3d --help"
-echo "  3. Or use Python API: import chr3d as c3d"
-echo ""
-echo "Installed tools:"
-echo "  - BWA (alignment)"
-echo "  - SAMtools (BAM processing)"
-echo "  - MACS3 (peak calling)"
-echo "  - pairtools (Hi-C pairs processing)"
-echo "  - cooler (Hi-C matrix generation)"
-echo "  - cooltools (Hi-C analysis)"
-echo "  - parasail (SIMD-accelerated alignment)"
-echo "  - clodius (HiGlass tileset generation)"
-echo "  - polars (fast DataFrames for loops_to_beddb)"
-echo ""
+echo "  conda activate $ENV_NAME"
+echo "  chr3d --help"

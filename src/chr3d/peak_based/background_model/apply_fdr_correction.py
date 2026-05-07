@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║   FDR CORRECTION - Multiple Testing Correction for ChIA-PET Results         ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║  PURPOSE:                                                                    ║
-║  - Load templates_with_nb_chromspec.csv with p-values                       ║
-║  - Apply multiple testing correction methods:                               ║
-║    * Bonferroni (most conservative)                                         ║
-║    * Benjamini-Hochberg (FDR, standard)                                     ║
-║    * Benjamini-Yekutieli (FDR, conservative)                                ║
-║    * Holm (step-down method)                                                ║
-║  - Add adjusted p-values and significance flags for each method             ║
-║  - Generate comprehensive output CSV with all corrections                   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+FDR Correction - Multiple Testing Correction for ChIA-PET Results
+
+Apply multiple testing correction methods (Bonferroni, Benjamini-Hochberg,
+Benjamini-Yekutieli, Holm) to p-values from ChIA-PET results.
 """
 
 import logging
@@ -36,9 +27,7 @@ def apply_fdr_corrections(input_file: str, output_file: str, alpha: float = 0.05
         output_file: Output CSV file with corrections
         alpha: Significance threshold (default: 0.05)
     """
-    logger.info("╔════════════════════════════════════════════════════════════════════╗")
-    logger.info("║   FDR CORRECTION - Multiple Testing Correction                    ║")
-    logger.info("╚════════════════════════════════════════════════════════════════════╝")
+    logger.info("FDR CORRECTION - Multiple Testing Correction")
     logger.info(f"  Significance threshold (α): {alpha}")
     
     # Load templates with p-values

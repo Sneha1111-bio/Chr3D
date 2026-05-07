@@ -1,40 +1,4 @@
-"""
-HiChIP Pipeline Orchestrator
-
-Runs the full HiChIP analysis pipeline end-to-end:
-  1. FASTQ splitting       (FastqSplitter, n_chunks parallel jobs)
-  2. Parallel alignment    (BWA MEM -5SP -T0, per chunk)
-  3. BAM merge + BEDPE     (samtools merge + pysam dedup by 5' coordinate)
-  4. MboI purification     (FragmentIndex + purify_bedpe)
-  5. Background model      (randomised positions, distance-decay stats)
-
-Key differences from ChIA-PET:
-  - No linker filtering step (enzyme-based, not linker-based)
-  - BWA MEM -5SP -T0 flags (HiChIP chimeric read handling)
-  - Filter -F 2304 (drop unmapped + secondary) instead of MAPQ cutoff
-  - MboI restriction fragment purification (replaces linker dedup)
-  - Background model generates randomised PETs preserving distance
-
-Output layout::
-
-    <output_dir>/
-    ├── splits/          per-chunk FASTQ + BAM files (removed after merge)
-    ├── aligned/         merged name-sorted BAM
-    ├── bedpe/           raw BEDPE + deduplicated BEDPE
-    ├── purified/        MboI-filtered BEDPE + removed PETs + stats
-    ├── background/      randomised background BEDPE + distance stats
-    └── qc/              per-step stats + timing report
-
-Validated configuration (500k read pairs, 76bp, hg38):
-  - 6 chunks × 4 threads = 13s alignment
-  - 37.2% unique valid PETs after dedup
-  - 88.2% retention after MboI purification
-  - Total pipeline time ~41s
-
-References:
-    Bhattacharyya et al. (2019) HiChIP: efficient and sensitive enrichment of
-    protein-directed chromatin architecture. Nature Methods.
-"""
+"""HiChIP Pipeline Orchestrator."""
 
 import itertools
 import json
@@ -47,11 +11,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Import system info utility
 from ..utils.system_info import save_system_info
 
-# Resolve the bin directory of the active Python / conda environment so that
-# child processes (multiprocessing) can find bwa and samtools on PATH.
 _ENV_BIN = str(Path(sys.executable).parent)
 
 import numpy as np
@@ -62,8 +23,6 @@ from .purifying import FragmentIndex, purify_bedpe
 
 logger = get_logger(__name__)
 
-
-# ─── helpers ──────────────────────────────────────────────────────────────────
 
 def _fmt_time(seconds: float) -> str:
     if seconds < 60:
@@ -162,8 +121,6 @@ def _load_prior_steps(steps_dir: str) -> Dict[str, Any]:
     return out
 
 
-# ─── sanity checks ────────────────────────────────────────────────────────────
-
 def _sanity_check_purification(stats: Dict, sample_id: str) -> List[str]:
     """
     Run sanity checks on MboI purification stats.
@@ -220,33 +177,8 @@ def _sanity_check_bedpe(valid: int, total: int, unmapped: int) -> List[str]:
     return warnings
 
 
-# ─── pipeline ─────────────────────────────────────────────────────────────────
-
 class HiChIPPipeline:
-    """
-    End-to-end HiChIP pipeline orchestrator.
-
-    Parameters
-    ----------
-    genome_index : str
-        Path to BWA-indexed genome FASTA (must have .amb, .ann, .bwt etc.).
-    fragment_bed : str
-        Restriction fragment BED file (from restriction_sites.py, e.g. MboI).
-    threads : int
-        Total CPU threads. Split across parallel alignment jobs.
-    n_chunks : int
-        Number of FASTQ chunks for parallel BWA jobs (default 6).
-        BWA threads per job = threads // n_chunks.
-    min_insert_size : int
-        Minimum insert size for MboI purification (default 100 bp).
-    genome_fai : str, optional
-        Path to genome .fai index (for background model chromosome sizes).
-        Inferred from genome_index + '.fai' if not provided.
-    keep_intermediates : bool
-        Retain per-chunk FASTQ/BAM files after merge (default False).
-    random_seed : int
-        Seed for background model randomisation (default 42).
-    """
+    """End-to-end HiChIP pipeline orchestrator."""
 
     def __init__(
         self,
@@ -258,7 +190,6 @@ class HiChIPPipeline:
         genome_fai: Optional[str] = None,
         keep_intermediates: bool = False,
         random_seed: int = 42,
-        # Loop calling parameters (ChIA-PET style background model)
         genome_size: str = 'hs',
         qvalue: float = 0.01,
         alpha: float = 0.05,
@@ -275,7 +206,6 @@ class HiChIPPipeline:
         self.keep_intermediates = keep_intermediates
         self.random_seed = random_seed
 
-        # Loop calling config
         self.genome_size = genome_size
         self.qvalue = qvalue
         self.alpha = alpha
@@ -283,7 +213,6 @@ class HiChIPPipeline:
         self.cytoband_file = cytoband_file
         self.background_samples = background_samples
 
-        # Derived: BWA threads per chunk
         self.bwa_threads = max(1, threads // n_chunks)
 
         self._validate()
@@ -298,10 +227,6 @@ class HiChIPPipeline:
             raise FileNotFoundError(f"BWA index incomplete. Missing: {missing}")
         if not Path(self.fragment_bed).exists():
             raise FileNotFoundError(f"Fragment BED not found: {self.fragment_bed}")
-
-    # ------------------------------------------------------------------
-    # Public entry point
-    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -346,9 +271,7 @@ class HiChIPPipeline:
                 "fastq_r1 and fastq_r2 are required when start_from=1"
             )
 
-        # Capture system configuration before pipeline starts
-        out = Path(output_dir)
-        qc_dir = out / "qc"
+        qc_dir = Path(output_dir) / "qc"
         steps_dir = qc_dir / "steps"
         qc_dir.mkdir(parents=True, exist_ok=True)
         steps_dir.mkdir(parents=True, exist_ok=True)
@@ -356,13 +279,13 @@ class HiChIPPipeline:
         save_system_info(str(system_info_path))
         logger.info(f"System configuration saved to {system_info_path}")
 
-        splits_dir     = out / "splits"
-        aligned_dir    = out / "aligned"
-        bedpe_dir      = out / "bedpe"
-        purified_dir   = out / "purified"
-        background_dir = out / "background"
-        peaks_dir      = out / "peaks"
-        loops_dir      = out / "loops"
+        splits_dir     = Path(output_dir) / "splits"
+        aligned_dir    = Path(output_dir) / "aligned"
+        bedpe_dir      = Path(output_dir) / "bedpe"
+        purified_dir   = Path(output_dir) / "purified"
+        background_dir = Path(output_dir) / "background"
+        peaks_dir      = Path(output_dir) / "peaks"
+        loops_dir      = Path(output_dir) / "loops"
         classified_dir = loops_dir / "classified"
         templates_dir  = loops_dir / "templates"
         results_dir    = loops_dir / "results"
@@ -389,8 +312,6 @@ class HiChIPPipeline:
         timing: Dict[str, float] = {}
         all_stats: Dict[str, Any] = {"sample_id": sample_id, "start_from": start_from}
 
-        # Reload any previously-persisted per-step stats so that resuming
-        # does not wipe values produced by earlier runs.
         prior = _load_prior_steps(str(steps_dir))
         for key in ("split_stats", "bedpe_stats", "purify_stats",
                     "bg_stats", "loop_stats"):
@@ -406,7 +327,6 @@ class HiChIPPipeline:
         dedup_bedpe = str(bedpe_dir / f"{sample_id}.dedup.bedpe")
         kept_bedpe  = str(purified_dir / f"{sample_id}.filter.byres")
 
-        # ── Step 1: Split FASTQ ────────────────────────────────────────
         if start_from <= 1:
             logger.info("\n[STEP 1] Splitting FASTQ...")
             t0 = time.time()
@@ -418,14 +338,11 @@ class HiChIPPipeline:
                 {"n_chunks": len(chunks)},
                 timing_key="split", seconds=timing["split"],
             )
-            # Also persist n_chunks standalone for convenience.
-            _save_step_stats(str(steps_dir), "n_chunks", len(chunks))
             logger.info(f"  {len(chunks)} chunks in {_fmt_time(timing['split'])}")
         else:
             logger.info("\n[STEP 1] SKIPPED (resume mode)")
             chunks = []
 
-        # ── Step 2: Parallel alignment ─────────────────────────────────
         if start_from <= 2:
             logger.info("\n[STEP 2] Parallel BWA MEM alignment...")
             t0 = time.time()
@@ -438,7 +355,6 @@ class HiChIPPipeline:
                 str(p) for p in splits_dir.glob("chunk_*.namesorted.bam")
             )
 
-        # ── Step 3: Merge BAMs ─────────────────────────────────────────
         if start_from <= 3:
             logger.info("\n[STEP 3] Merging chunk BAMs...")
             t0 = time.time()
@@ -453,7 +369,6 @@ class HiChIPPipeline:
                     f"Cannot resume from step {start_from}: missing {merged_bam}"
                 )
 
-        # ── Step 4: BAM → BEDPE + dedup ───────────────────────────────
         if start_from <= 4:
             logger.info("\n[STEP 4] BAM → BEDPE + deduplication...")
             t0 = time.time()
@@ -488,7 +403,6 @@ class HiChIPPipeline:
                     f"Cannot resume from step {start_from}: missing {dedup_bedpe}"
                 )
 
-        # ── Step 5: MboI purification ──────────────────────────────────
         if start_from <= 5:
             logger.info("\n[STEP 5] MboI restriction fragment purification...")
             t0 = time.time()
@@ -526,7 +440,6 @@ class HiChIPPipeline:
                     f"Cannot resume from step {start_from}: missing {kept_bedpe}"
                 )
 
-        # ── Step 6: Background model + loop calling ────────────────────
         logger.info("\n[STEP 6] Generating background model...")
         t0 = time.time()
         bg_stats = self._run_background_model(
@@ -544,8 +457,6 @@ class HiChIPPipeline:
             f"  Done in {_fmt_time(timing['background'])}"
         )
 
-        # Loop calling via ChIA-PET-style background model (peaks → classify
-        # → templates → NB sampling → p-values → FDR).
         logger.info("\n[STEP 6b] Peak calling + loop calling...")
         t0 = time.time()
         loop_stats = self._run_loop_calling(
@@ -564,11 +475,9 @@ class HiChIPPipeline:
         )
         logger.info(f"  Done in {_fmt_time(timing['loop_calling'])}")
 
-        # ── Cleanup intermediates ──────────────────────────────────────
         if not self.keep_intermediates and start_from <= 2:
             self._cleanup_splits(str(splits_dir))
 
-        # ── QC report ─────────────────────────────────────────────────
         timing["total"] = time.time() - t_pipeline
         all_stats["timing"] = timing
         self._write_qc_report(all_stats, str(qc_dir), sample_id)
@@ -584,10 +493,6 @@ class HiChIPPipeline:
         logger.info("=" * 70)
 
         return all_stats
-
-    # ------------------------------------------------------------------
-    # Private step implementations
-    # ------------------------------------------------------------------
 
     def _split_fastq(
         self, fastq_r1: str, fastq_r2: str, split_dir: str
@@ -698,10 +603,6 @@ class HiChIPPipeline:
                 s2   = "-" if r2.is_reverse else "+"
                 c1, c2 = r1.reference_name, r2.reference_name
 
-                # Canonical ordering (lower chrom / pos first)
-                if c1 > c2 or (c1 == c2 and pos1 > pos2):
-                    c1, c2, pos1, pos2, s1, s2 = c2, c1, pos2, pos1, s2, s1
-
                 key = (c1, pos1, c2, pos2)
                 if key in seen:
                     dup += 1
@@ -738,7 +639,6 @@ class HiChIPPipeline:
             min_insert_size=self.min_insert_size,
         )
 
-        # Write stats file
         with open(stats_path, "w") as f:
             for k, v in stats.items():
                 f.write(f"{k}\t{v}\n")
@@ -754,7 +654,6 @@ class HiChIPPipeline:
         """
         rng = random.Random(self.random_seed)
 
-        # Load chromosome sizes from .fai
         chrom_sizes: Dict[str, int] = {}
         if Path(self.genome_fai).exists():
             with open(self.genome_fai) as fh:
@@ -763,7 +662,6 @@ class HiChIPPipeline:
                     if len(parts) >= 2:
                         chrom_sizes[parts[0]] = int(parts[1])
 
-        # Parse purified PETs
         chrom_counts: Dict[str, int] = defaultdict(int)
         distances: List[int] = []
         pets: List[Tuple] = []
@@ -783,7 +681,6 @@ class HiChIPPipeline:
 
         total_pets = len(pets)
 
-        # Randomise intra-chromosomal positions preserving distance
         bg_bedpe = os.path.join(bg_dir, f"{sample_id}.background.bedpe")
         n_bg = 0
         with open(bg_bedpe, "w") as out:
@@ -792,7 +689,6 @@ class HiChIPPipeline:
                     continue
                 dist = abs(p2 - p1)
                 max_start = chrom_sizes[c1] - dist - 1000
-                # Skip if chromosome is too small to fit the 1000bp margin
                 if max_start < 1000:
                     continue
                 new_p1 = rng.randint(1000, max_start)
@@ -804,7 +700,6 @@ class HiChIPPipeline:
                 )
                 n_bg += 1
 
-        # Compute distance-decay statistics
         bg_stats: Dict = {
             "total_pets": total_pets,
             "n_background": n_bg,
@@ -817,7 +712,6 @@ class HiChIPPipeline:
             bg_stats["min_distance"]    = int(np.min(arr))
             bg_stats["max_distance"]    = int(np.max(arr))
 
-            # Log-binned histogram for distance decay
             log_bins = np.logspace(np.log10(max(1000, arr.min())),
                                    np.log10(arr.max()), 20)
             hist, edges = np.histogram(arr, bins=log_bins)
@@ -826,7 +720,6 @@ class HiChIPPipeline:
                 "counts": [int(c) for c in hist],
             }
 
-        # Write stats file
         stats_path = os.path.join(bg_dir, f"{sample_id}.background.stats")
         with open(stats_path, "w") as f:
             f.write("Background Model Statistics\n")
@@ -882,8 +775,6 @@ class HiChIPPipeline:
 
         stats: Dict = {}
 
-        # --- a: Peak calling on the purified BEDPE (both anchors → BED → MACS3) ---
-        logger.info("  [a] Peak calling (MACS3 on purified BEDPE)...")
         peak_caller = PeakCaller(
             genome_size=self.genome_size,
             qvalue_cutoff=self.qvalue,
@@ -903,8 +794,6 @@ class HiChIPPipeline:
             return {'skipped': True, 'reason': 'no peaks file', 'peak_stats': peak_stats}
         logger.info(f"    Peaks: {peak_stats.get('num_peaks', 'N/A')} at {peaks_file}")
 
-        # --- b: Classify PETs ---
-        logger.info("  [b] Classifying PETs (P2P / P2D / D2D)...")
         peaks_by_chr, peak_ids_by_chr, peaks_df = load_peaks(
             peaks_file,
             standard_chroms_only=self.standard_chroms_only,
@@ -931,8 +820,6 @@ class HiChIPPipeline:
         p2p_file = f"{classify_prefix}.P2P_pets.txt"
         d2d_file = f"{classify_prefix}.D2D_pets.txt"
 
-        # --- c: Extract templates ---
-        logger.info("  [c] Extracting templates from P2P PETs...")
         templates_csv = os.path.join(templates_dir, f"{sample_id}_templates.csv")
         extract_templates(
             p2p_file=p2p_file,
@@ -943,8 +830,6 @@ class HiChIPPipeline:
         )
         stats['templates_csv'] = templates_csv
 
-        # --- d: Background sampling phase 1 (NB fitting) ---
-        logger.info("  [d] Background sampling phase 1 (NB parameter estimation)...")
         templates_nb_csv = os.path.join(
             templates_dir, f"{sample_id}_templates_with_nb.csv"
         )
@@ -956,8 +841,6 @@ class HiChIPPipeline:
         )
         stats['templates_nb_csv'] = templates_nb_csv
 
-        # --- e: Background sampling phase 2 (p-values) ---
-        logger.info("  [e] Calculating p-values (PMF / NB)...")
         pvalues_csv = os.path.join(
             templates_dir, f"{sample_id}_templates_with_pvalues.csv"
         )
@@ -967,8 +850,6 @@ class HiChIPPipeline:
         )
         stats['pvalues_csv'] = pvalues_csv
 
-        # --- f: FDR correction ---
-        logger.info("  [f] Applying FDR correction...")
         loops_csv = os.path.join(
             results_dir, f"{sample_id}_significant_loops.csv"
         )
@@ -1008,7 +889,6 @@ class HiChIPPipeline:
         classify   = loops.get("classify", {}) if isinstance(loops, dict) else {}
         peak_stats = loops.get("peak_stats", {}) if isinstance(loops, dict) else {}
 
-        # --- txt (tab-separated, one metric per row) -----------------------
         with open(qc_path, "w") as f:
             f.write(f"sample_id\t{sample_id}\n")
             f.write(f"total_read_pairs\t{_fmt_int(total_pairs)}\n")
@@ -1031,16 +911,6 @@ class HiChIPPipeline:
                 except (TypeError, ValueError):
                     f.write(f"time_{step}_s\tN/A\n")
 
-        # --- json (easily fetched programmatically) ------------------------
-        def _safe_pct(n, d):
-            try:
-                n, d = float(n), float(d)
-                if d > 0:
-                    return round(100.0 * n / d, 4)
-            except (TypeError, ValueError):
-                pass
-            return None
-
         summary = {
             "sample_id": sample_id,
             "bedpe": {
@@ -1048,6 +918,7 @@ class HiChIPPipeline:
                 "valid_pets_after_dedup": valid_pets,
                 "unmapped":               bedpe.get("unmapped"),
                 "duplicates":             bedpe.get("duplicates"),
+                "valid_pet_pct":          _fmt_pct(valid_pets, total_pairs),
                 "valid_pet_pct":          _safe_pct(valid_pets, total_pairs),
             },
             "purification": {
@@ -1088,8 +959,6 @@ class HiChIPPipeline:
         logger.info(f"  QC report: {qc_path}")
         logger.info(f"  QC JSON  : {json_path}")
 
-
-# ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
     import argparse

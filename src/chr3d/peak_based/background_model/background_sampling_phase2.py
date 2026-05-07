@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║   BACKGROUND SAMPLING - PHASE 2: PMF P-Value Calculation                    ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║  PURPOSE:                                                                    ║
-║  - Load templates_with_nb.csv from Phase 1                                  ║
-║  - Calculate p-values using PMF: P(X >= K | NB(r, p))                       ║
-║  - For valid NB: Use scipy.stats.nbinom.sf(K-1, r, p)                       ║
-║  - For degenerate with PETs > 0: Use p-value = 1/n_samples                  ║
-║  - For degenerate with PETs = 0: Use p-value = 1.0                          ║
-║  - Add p_value and significance columns                                     ║
-║  - Update templates_with_nb.csv with final results                          ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+Background Sampling - Phase 2: PMF P-Value Calculation
+
+Load templates_with_nb.csv from Phase 1, calculate p-values using PMF,
+and update templates_with_nb.csv with final results.
+
+Cases:
+  - Valid NB: scipy.stats.nbinom.sf(K-1, r, p)
+  - Degenerate with PETs > 0: p-value = 1/n_samples
+  - Degenerate with PETs = 0: p-value = 1.0
 """
 
 import logging
@@ -62,9 +59,7 @@ def calculate_pvalues(templates_file: str, output_file: str, significance_thresh
         output_file: Output templates_with_nb.csv with p-values
         significance_threshold: Threshold for significance (default: 0.05)
     """
-    logger.info("╔════════════════════════════════════════════════════════════════════╗")
-    logger.info("║   BACKGROUND SAMPLING - PHASE 2: PMF P-Value Calculation          ║")
-    logger.info("╚════════════════════════════════════════════════════════════════════╝")
+    logger.info("BACKGROUND SAMPLING - PHASE 2: PMF P-Value Calculation")
     logger.info(f"  Significance threshold: {significance_threshold}")
 
     logger.info(f"\n{'='*70}")
@@ -88,26 +83,26 @@ def calculate_pvalues(templates_file: str, output_file: str, significance_thresh
     r_vals       = templates['r'].values.astype(float)
     p_vals       = templates['p'].values.astype(float)
 
-    # ── Case 1: valid NB — batch scipy call on the full subset ───────────
+    # Case 1: valid NB — batch scipy call
     valid_mask = (~is_deg) & (~np.isnan(r_vals)) & (~np.isnan(p_vals))
     if valid_mask.any():
         k  = pet_counts[valid_mask]
         rv = r_vals[valid_mask]
         pv = p_vals[valid_mask]
-        # sf(k-1, r, p) = P(X >= k | NB(r, p))  — vectorized over all valid rows
+        # sf(k-1, r, p) = P(X >= k | NB(r, p))
         raw = stats.nbinom.sf(k - 1, rv, pv).astype(float)
         raw = np.clip(raw, 0.0, 1.0)
         p_values[valid_mask] = raw
 
     n_valid_nb = int(valid_mask.sum())
 
-    # ── Case 2: degenerate with observed PETs > 0 ────────────────────────
+    # Case 2: degenerate with observed PETs > 0
     deg_pets_mask = is_deg & (pet_counts > 0) & (n_samples > 0)
     if deg_pets_mask.any():
         p_values[deg_pets_mask] = 1.0 / n_samples[deg_pets_mask]
     n_degenerate_with_pets = int(deg_pets_mask.sum())
 
-    # ── Case 3 & 4: degenerate/zero-samples — already 1.0 by default ─────
+    # Case 3 & 4: degenerate/zero-samples — already 1.0 by default
     n_degenerate_no_pets = int((is_deg & (pet_counts == 0)).sum())
     n_zero_samples       = int((n_samples == 0).sum())
 

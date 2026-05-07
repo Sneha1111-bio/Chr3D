@@ -1,13 +1,4 @@
-"""
-TAD / Compartment Calling Module
-=================================
-Insulation score / TAD boundary detection and A/B compartment calling
-using cooltools.
-
-Classes:
-    HiCTADCaller:          Insulation scoring across all resolutions.
-    HiCCompartmentCaller:  A/B compartment eigenvector (eigs_cis) calling.
-"""
+"""TAD / Compartment Calling Module - Insulation score and A/B compartment calling."""
 
 import os
 import time
@@ -24,14 +15,10 @@ warnings.filterwarnings('ignore')
 logger = get_logger(__name__)
 
 
-# Default window sizes (bp). Valid windows per resolution are those that are
-# multiples of the resolution AND within the per-resolution cap below.
 DEFAULT_WINDOWS = [
     30_000, 50_000, 100_000, 200_000, 500_000, 1_000_000,
 ]
 
-# Cap maximum window per resolution to avoid biologically meaningless and
-# extremely slow combos (e.g. 1 Mb window at 5 kb resolution).
 DEFAULT_MAX_WINDOW_PER_RES: Dict[int, int] = {
     5_000:   250_000,
     10_000:  500_000,
@@ -42,23 +29,7 @@ DEFAULT_MAX_WINDOW_PER_RES: Dict[int, int] = {
 
 
 class HiCTADCaller:
-    """
-    Insulation score and TAD boundary caller for Hi-C contact matrices.
-
-    Operates on a single .mcool file (or plain .cool) and produces:
-      - Per-resolution/per-window insulation score TSV files
-      - TAD boundary BED files
-      - A summary TSV across all resolution x window combinations
-
-    Example::
-
-        caller = HiCTADCaller(threads=16)
-        stats = caller.run(
-            mcool_file="sample.mcool",
-            output_dir="results/tads",
-            sample_id="sample1",
-        )
-    """
+    """Insulation score and TAD boundary caller for Hi-C contact matrices."""
 
     def __init__(
         self,
@@ -67,24 +38,11 @@ class HiCTADCaller:
         threads: int = 1,
         ignore_diags: int = 2,
     ):
-        """
-        Args:
-            windows: Window sizes in bp to test (default: DEFAULT_WINDOWS).
-            max_window_per_res: Per-resolution window cap dict
-                                (default: DEFAULT_MAX_WINDOW_PER_RES).
-            threads: Threads available (used for progress only; cooltools is
-                     single-threaded per call).
-            ignore_diags: Diagonals to ignore in insulation calculation
-                          (default: 2).
-        """
+        """Initialize TAD caller."""
         self.windows = windows or DEFAULT_WINDOWS
         self.max_window_per_res = max_window_per_res or DEFAULT_MAX_WINDOW_PER_RES
         self.threads = threads
         self.ignore_diags = ignore_diags
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -93,25 +51,7 @@ class HiCTADCaller:
         sample_id: str,
         resolutions: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        """
-        Run TAD calling on all resolutions present in *mcool_file*.
-
-        Args:
-            mcool_file: Path to .mcool (or .cool) file.
-            output_dir: Directory where outputs are written.
-            sample_id:  Sample identifier used in file names.
-            resolutions: Explicit list of resolutions to process.
-                         If None, all resolutions in the mcool are used.
-
-        Returns:
-            Dict with keys:
-              - ``summary_tsv``   path to the summary file
-              - ``boundary_beds`` list of BED file paths
-              - ``n_success``     number of successful (res, window) combos
-              - ``n_failed``      number of failed combos
-              - ``resolutions``   list of resolutions processed
-              - ``timing_sec``    wall-clock seconds
-        """
+        """Run TAD calling on all resolutions present in mcool_file."""
         try:
             import cooler
             import cooltools
@@ -133,7 +73,6 @@ class HiCTADCaller:
         logger.info(f"  output   : {output_dir}")
         logger.info(f"  sample   : {sample_id}")
 
-        # --- Discover resolutions ---
         avail_res = self._list_resolutions(mcool_file)
         if resolutions:
             use_res = [r for r in resolutions if r in avail_res]
@@ -156,7 +95,6 @@ class HiCTADCaller:
             all_rows.extend(rows)
             boundary_beds.extend(beds)
 
-        # --- Write summary ---
         summary_df = pd.DataFrame(all_rows)
         summary_tsv = str(output_dir / f"{sample_id}_tad_summary.tsv")
         summary_df.to_csv(summary_tsv, sep='\t', index=False)
@@ -177,10 +115,6 @@ class HiCTADCaller:
             'timing_sec':    elapsed,
         }
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _list_resolutions(self, mcool_file: str) -> List[int]:
         """Return sorted list of resolutions stored in an mcool file."""
         import cooler
@@ -195,7 +129,6 @@ class HiCTADCaller:
                 return res
         except Exception:
             pass
-        # Plain .cool — single resolution
         try:
             c = cooler.Cooler(mcool_file)
             return [c.binsize]
@@ -238,7 +171,6 @@ class HiCTADCaller:
             return [{'resolution_bp': res, 'window_bp': w, 'status': f'failed: {e}'}
                     for w in windows], []
 
-        # Build view excluding tiny chromosomes
         chromsizes = clr.chromsizes
 
         rows: List[dict] = []
@@ -272,7 +204,6 @@ class HiCTADCaller:
         insulation_tsv = str(res_dir / f"win_{window // 1000}kb_insulation.tsv")
         boundary_bed   = str(res_dir / f"win_{window // 1000}kb_boundaries.bed")
 
-        # Resume-safe
         if (os.path.exists(insulation_tsv) and os.path.getsize(insulation_tsv) > 100 and
                 os.path.exists(boundary_bed)):
             logger.debug(f"  res={res} win={window}: cached — skipping")
@@ -303,10 +234,8 @@ class HiCTADCaller:
             if ins is None or len(ins) == 0:
                 raise ValueError("cooltools.insulation returned empty result")
 
-            # Save insulation scores
             ins.to_csv(insulation_tsv, sep='\t', index=False)
 
-            # Extract boundaries and write BED
             boundary_col   = f'is_boundary_{window}'
             insulation_col = f'log2_insulation_score_{window}'
             strength_col   = f'boundary_strength_{window}'
@@ -356,45 +285,11 @@ class HiCTADCaller:
             }, None
 
 
-# =============================================================================
-# A/B Compartment Calling
-# =============================================================================
-
-# Resolutions well-suited for compartment calling.  Compartments are
-# megabase-scale features; fine resolutions (< 25 kb) are noisy and slow.
 DEFAULT_COMPARTMENT_RESOLUTIONS = [25_000, 50_000, 100_000]
 
 
 class HiCCompartmentCaller:
-    """
-    A/B chromatin compartment caller using cooltools eigenvector decomposition.
-
-    Uses ``cooltools.eigs_cis`` to compute the first N eigenvectors of the
-    observed-over-expected (OE) contact matrix for each chromosome.  The first
-    eigenvector (E1) reflects the compartment signal: positive values → A
-    compartment (active / euchromatin), negative values → B compartment
-    (inactive / heterochromatin).
-
-    .. note::
-        Sign of E1 is arbitrary without a phasing track (e.g. gene density or
-        GC content).  If a phasing track BED/bigWig is supplied the sign is
-        flipped so that A-compartment bins have positive E1.
-
-    Outputs per resolution:
-        - ``<res>kb_compartments.tsv``  — per-bin eigenvector table
-        - ``<res>kb_A_compartment.bed`` — bins with E1 > 0  (A compartment)
-        - ``<res>kb_B_compartment.bed`` — bins with E1 < 0  (B compartment)
-        - ``<res>kb_eigvals.tsv``       — eigenvalue table
-
-    Example::
-
-        caller = HiCCompartmentCaller()
-        stats = caller.run(
-            mcool_file="sample.mcool",
-            output_dir="results/compartments",
-            sample_id="sample1",
-        )
-    """
+    """A/B chromatin compartment caller using cooltools eigenvector decomposition."""
 
     def __init__(
         self,
@@ -404,30 +299,12 @@ class HiCCompartmentCaller:
         ignore_diags: Optional[int] = None,
         clip_percentile: float = 99.9,
     ):
-        """
-        Args:
-            resolutions: Resolutions (bp) to call compartments at.
-                         Default: [25000, 50000, 100000].
-            n_eigs: Number of eigenvectors to compute (default: 3).
-                    E1 is the primary compartment signal; E2/E3 can capture
-                    sub-compartment structure.
-            phasing_track: Path to a BED file (chrom, start, end, value) used
-                           to orient E1 sign (e.g. gene density track).
-                           If None, sign is left as returned by cooltools.
-            ignore_diags: Diagonals to ignore (default: cooltools decides from
-                          the cooler's stored metadata).
-            clip_percentile: Percentile at which to clip extreme contact values
-                             before eigenvector decomposition (default: 99.9).
-        """
+        """Initialize compartment caller."""
         self.resolutions = resolutions or DEFAULT_COMPARTMENT_RESOLUTIONS
         self.n_eigs = n_eigs
         self.phasing_track = phasing_track
         self.ignore_diags = ignore_diags
         self.clip_percentile = clip_percentile
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -435,21 +312,7 @@ class HiCCompartmentCaller:
         output_dir: str,
         sample_id: str,
     ) -> Dict[str, Any]:
-        """
-        Compute A/B compartment eigenvectors for all configured resolutions.
-
-        Args:
-            mcool_file: Path to .mcool (or .cool) file.
-            output_dir: Directory where outputs are written.
-            sample_id:  Sample identifier used in file names.
-
-        Returns:
-            Dict with keys:
-              - ``compartment_tsvs``  list of per-bin eigenvector TSV paths
-              - ``summary_tsv``       combined summary across resolutions
-              - ``resolutions``       resolutions successfully processed
-              - ``timing_sec``        wall-clock seconds
-        """
+        """Compute A/B compartment eigenvectors for all configured resolutions."""
         try:
             import cooler
             import cooltools
@@ -480,7 +343,6 @@ class HiCCompartmentCaller:
             logger.warning(f"  Resolutions not in mcool (skipped): {skipped}")
         logger.info(f"  Resolutions  : {use_res}")
 
-        # Load phasing track once
         phasing_df = self._load_phasing_track(self.phasing_track)
 
         all_rows: List[dict] = []
@@ -511,10 +373,6 @@ class HiCCompartmentCaller:
             'resolutions':      processed_res,
             'timing_sec':       elapsed,
         }
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _list_resolutions(self, mcool_file: str) -> List[int]:
         import cooler
@@ -573,7 +431,6 @@ class HiCCompartmentCaller:
         a_bed      = str(output_dir / f"{sample_id}_res{res // 1000}kb_A_compartment.bed")
         b_bed      = str(output_dir / f"{sample_id}_res{res // 1000}kb_B_compartment.bed")
 
-        # Resume-safe
         if os.path.exists(eig_tsv) and os.path.getsize(eig_tsv) > 100:
             logger.debug(f"  res={res}: compartments cached — skipping")
             return {'resolution_bp': res, 'status': 'cached', 'eig_tsv': eig_tsv}, eig_tsv
@@ -583,19 +440,16 @@ class HiCCompartmentCaller:
             uri = self._cooler_uri(mcool_file, res)
             clr = cooler.Cooler(uri)
 
-            # Build view — exclude tiny chromosomes (< 3 bins)
             chromsizes = clr.chromsizes
             safe_chroms = chromsizes[chromsizes >= res * 3]
             if len(safe_chroms) == 0:
                 raise ValueError(f"No chromosomes with >= 3 bins at {res}bp resolution")
             view_df = bioframe.make_viewframe(safe_chroms)
 
-            # Build per-chromosome phasing track aligned to cooler bins
             phasing_track = None
             if phasing_df is not None:
                 phasing_track = self._align_phasing_track(clr, phasing_df, view_df)
 
-            # Keyword args for eigs_cis
             kwargs: Dict[str, Any] = {
                 'n_eigs':          self.n_eigs,
                 'view_df':         view_df,
@@ -609,13 +463,9 @@ class HiCCompartmentCaller:
 
             eigvals, eigvecs = cooltools.eigs_cis(clr, **kwargs)
 
-            # eigvecs: DataFrame with columns [chrom, start, end, E1, E2, ...]
-            # eigvals: DataFrame with columns [chrom, eig, val]
-
             eigvecs.to_csv(eig_tsv, sep='\t', index=False)
             eigvals.to_csv(eigval_tsv, sep='\t', index=False)
 
-            # Write A (E1 > 0) and B (E1 < 0) compartment BEDs
             e1_col = 'E1' if 'E1' in eigvecs.columns else eigvecs.columns[3]
             valid = eigvecs[eigvecs[e1_col].notna()].copy()
 
@@ -663,23 +513,15 @@ class HiCCompartmentCaller:
         phasing_df: pd.DataFrame,
         view_df: pd.DataFrame,
     ) -> pd.DataFrame:
-        """
-        Aggregate the phasing track (e.g. gene density) into cooler bins.
-
-        Computes the mean phasing value per cooler bin using overlap.
-        Returns a DataFrame with columns [chrom, start, end, value] aligned
-        to the cooler's bin table.
-        """
+        """Aggregate the phasing track into cooler bins."""
         try:
             import bioframe as bf
             bins = clr.bins()[:][['chrom', 'start', 'end']]
 
-            # Filter bins to chroms in view
             view_chroms = set(view_df['chrom'])
             bins = bins[bins['chrom'].isin(view_chroms)].copy()
             phasing_df = phasing_df[phasing_df['chrom'].isin(view_chroms)].copy()
 
-            # Overlap-based mean using bioframe
             overlapped = bf.overlap(bins, phasing_df, suffixes=('', '_p'))
             if 'value_p' not in overlapped.columns:
                 raise ValueError("Overlap produced no 'value_p' column")
@@ -691,7 +533,6 @@ class HiCCompartmentCaller:
                 .reset_index()
                 .rename(columns={'value_p': 'value'})
             )
-            # Merge back to preserve bin order and fill gaps with NaN
             result = bins.merge(agg, on=['chrom', 'start', 'end'], how='left')
             return result[['chrom', 'start', 'end', 'value']]
 

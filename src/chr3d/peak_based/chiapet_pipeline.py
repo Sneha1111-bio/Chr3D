@@ -60,45 +60,13 @@ def _json_default(obj: Any):
         return str(obj)
     if isinstance(obj, set):
         return list(obj)
-    # defaultdict inherits from dict so it's serialisable, but be safe:
     if hasattr(obj, "keys") and hasattr(obj, "values"):
         return dict(obj)
     return str(obj)
 
 
 class ChiaPetPipeline:
-    """
-    End-to-end ChIA-PET pipeline orchestrator.
-
-    Parameters
-    ----------
-    genome_index : str
-        Path to BWA-indexed genome FASTA.
-    linkers : list[str]
-        One or more linker sequences to filter against.
-    threads : int
-        CPU threads for BWA / samtools / linker filtering.
-    mapq : int
-        Minimum mapping quality for BAM filtering (default 30).
-    genome_size : str
-        MACS3 genome size string ('hs', 'mm', or integer; default 'hs').
-    qvalue : float
-        MACS3 q-value cutoff (default 0.05).
-    alpha : float
-        FDR significance threshold (default 0.05).
-    min_score : int
-        Minimum parasail alignment score for linker matching (default 20).
-    min_tag : int
-        Minimum tag length after linker removal (default 15).
-    max_tag : int
-        Maximum tag length after linker removal (default 40).
-    standard_chroms_only : bool
-        Restrict loop calling to chr1-22 + chrX/Y (default True).
-    cytoband_file : str, optional
-        Path to UCSC cytoband file for centromere exclusion.
-    keep_intermediates : bool
-        Keep intermediate BAM files (default False).
-    """
+    """End-to-end ChIA-PET pipeline orchestrator."""
 
     def __init__(
         self,
@@ -130,10 +98,6 @@ class ChiaPetPipeline:
         self.cytoband_file = cytoband_file
         self.keep_intermediates = keep_intermediates
 
-    # ------------------------------------------------------------------
-    # Public entry point
-    # ------------------------------------------------------------------
-
     def run(
         self,
         fastq_r1: Optional[str] = None,
@@ -142,30 +106,7 @@ class ChiaPetPipeline:
         sample_id: str = 'sample',
         start_from: int = 1,
     ) -> Dict:
-        """
-        Run the full ChIA-PET pipeline, or resume from a later step.
-
-        Parameters
-        ----------
-        fastq_r1 : str, optional
-            Path to R1 FASTQ (gzipped or plain). Required when ``start_from<=1``.
-        fastq_r2 : str, optional
-            Path to R2 FASTQ (gzipped or plain). Required when ``start_from<=1``.
-        output_dir : str
-            Root output directory (created if absent).
-        sample_id : str
-            Sample name used as file prefix.
-        start_from : int
-            Step to resume from (1=linker filtering, 2=mapping, 3=peak calling,
-            4=background model/loop calling). Default 1 runs the full pipeline.
-            For any value > 1, the pre-computed outputs from previous steps are
-            expected to already exist at the canonical paths under ``output_dir``.
-
-        Returns
-        -------
-        dict
-            Collected stats from every pipeline step + timing breakdown.
-        """
+        """Run the full ChIA-PET pipeline, or resume from a later step."""
         pipeline_start = time.time()
         if start_from < 1 or start_from > 4:
             raise ValueError(
@@ -176,7 +117,6 @@ class ChiaPetPipeline:
                 "fastq_r1 and fastq_r2 are required when start_from=1"
             )
 
-        # Capture system configuration before pipeline starts
         out = Path(output_dir)
         qc_dir = out / 'qc'
         steps_dir = qc_dir / 'steps'
@@ -218,21 +158,15 @@ class ChiaPetPipeline:
         timing: Dict[str, float] = {}
         all_stats: Dict[str, Any] = {'sample_id': sample_id, 'start_from': start_from}
 
-        # Load any previously-saved per-step stats so that resuming does not
-        # erase the values from prior steps.
         prior = self._load_prior_steps(str(steps_dir))
         for key in ('filter_stats', 'map_stats', 'peak_stats', 'loop_stats'):
             if key in prior:
                 all_stats[key] = prior[key]
         if 'timing' in prior:
-            # Keep previously-recorded timings; this run may overwrite them.
             for step, secs in prior['timing'].items():
                 if step != 'total':
                     timing[step] = secs
 
-        # ------------------------------------------------------------------
-        # Step 1: Linker filtering
-        # ------------------------------------------------------------------
         if start_from <= 1:
             logger.info("\n[STEP 1] Linker filtering...")
             t0 = time.time()
@@ -251,9 +185,6 @@ class ChiaPetPipeline:
             filt_r1 = os.path.join(str(filtered_dir), f"{sample_id}_filtered_R1.fastq")
             filt_r2 = os.path.join(str(filtered_dir), f"{sample_id}_filtered_R2.fastq")
 
-        # ------------------------------------------------------------------
-        # Step 2: Mapping
-        # ------------------------------------------------------------------
         if start_from <= 2:
             logger.info("\n[STEP 2] Mapping (BWA + samtools + BEDPE)...")
             t0 = time.time()
@@ -279,9 +210,6 @@ class ChiaPetPipeline:
                     f"Cannot resume from step {start_from}: missing {dedup_bedpe}"
                 )
 
-        # ------------------------------------------------------------------
-        # Step 3: Peak calling (MACS3 on filtered BAM)
-        # ------------------------------------------------------------------
         if start_from <= 3:
             logger.info("\n[STEP 3] Peak calling (MACS3)...")
             t0 = time.time()
@@ -303,17 +231,12 @@ class ChiaPetPipeline:
                 raise FileNotFoundError(
                     f"Cannot resume from step {start_from}: missing {peaks_file}"
                 )
-            # If we have no saved peak_stats from a prior run, synthesise a
-            # minimal placeholder so downstream reports do not read 'N/A'.
             if 'peak_stats' not in all_stats:
                 all_stats['peak_stats'] = {
                     'peaks_file': peaks_file,
                     'resumed': True,
                 }
 
-        # ------------------------------------------------------------------
-        # Step 4: Background model  (classify → extract → phase1 → phase2 → FDR)
-        # ------------------------------------------------------------------
         logger.info("\n[STEP 4] Background model & loop calling...")
         t0 = time.time()
         loop_stats = self._run_background_model(
@@ -332,9 +255,6 @@ class ChiaPetPipeline:
         )
         logger.info(f"  Done in {_fmt_time(timing['background_model'])}")
 
-        # ------------------------------------------------------------------
-        # Write QC / timing report
-        # ------------------------------------------------------------------
         timing['total'] = time.time() - pipeline_start
         all_stats['timing'] = timing
         self._write_qc_report(all_stats, str(qc_dir), sample_id)
@@ -351,26 +271,15 @@ class ChiaPetPipeline:
 
         return all_stats
 
-    # ------------------------------------------------------------------
-    # Step implementations
-    # ------------------------------------------------------------------
-
     def _run_linker_filtering(
         self, r1: str, r2: str, out_dir: str, sample_id: str
     ):
-        """
-        Run parasail-based linker filtering (LinkerFilterV3).
-
-        filter_fastq_parallel produces per-category FASTQ files named
-        ``{prefix}.{i}_{j}.R1.fastq``.  For single-linker ChIA-PET the
-        useful category is ``1_1`` (same-linker).  We merge all same-linker
-        categories into a single pair of files for the mapping step.
-        """
-        from .linker_filtering import LinkerFilterV3
+        """Run parasail-based linker filtering."""
+        from .linker_filtering import LinkerFilter
         import gzip
         import shutil
 
-        filt = LinkerFilterV3(
+        filt = LinkerFilter(
             linker_sequences=self.linkers,
             n_threads=self.threads,
             min_alignment_score=self.min_score,
@@ -385,14 +294,6 @@ class ChiaPetPipeline:
             output_dir=out_dir,
         )
 
-        # Determine which output categories to merge for mapping.
-        # Category files: {prefix}.{i}_{j}.R1.fastq
-        #
-        # If the two linkers are RC pairs (e.g. A & RC(A)), then:
-        #   1_2 and 2_1 are the real "same-linker" PETs (A on one end, RC(A) on other)
-        #   1_1 and 2_2 would be same-strand duplicates — typically empty
-        # Otherwise (truly distinct linkers):
-        #   1_1 and 2_2 are same-linker
         n_linkers = len(self.linkers)
         linkers_are_rc = (
             n_linkers == 2 and
@@ -400,10 +301,8 @@ class ChiaPetPipeline:
         )
 
         if linkers_are_rc:
-            # 1_2 + 2_1: the useful RC-pair categories
             same_linker_cats = [(1, 2), (2, 1)]
         else:
-            # i_i: homo-linker categories
             same_linker_cats = [(i, i) for i in range(1, n_linkers + 1)]
 
         merged_r1 = os.path.join(out_dir, f"{sample_id}_filtered_R1.fastq")
@@ -427,9 +326,9 @@ class ChiaPetPipeline:
         self, r1: str, r2: str, out_dir: str, sample_id: str
     ) -> Dict:
         """Run BWA mapping + MAPQ filter + BEDPE conversion + deduplication."""
-        from .mapping import PETMapperV3
+        from .mapping import PETMapper
 
-        mapper = PETMapperV3(
+        mapper = PETMapper(
             genome_index=self.genome_index,
             mapping_quality_cutoff=self.mapq,
             n_threads=self.threads,
@@ -444,7 +343,6 @@ class ChiaPetPipeline:
             remove_duplicates=True,
         )
 
-        # Surface key output paths for later steps
         stats['filtered_bam'] = os.path.join(out_dir, f"{sample_id}.q{self.mapq}.bam")
         stats['final_bedpe']   = os.path.join(out_dir, f"{sample_id}.dedup.bedpe")
 
@@ -497,20 +395,16 @@ class ChiaPetPipeline:
 
         stats = {}
 
-        # --- 4a: Classify PETs ---
-        logger.info("  [4a] Classifying PETs (P2P / P2D / D2D)...")
         if not peaks_file or not os.path.exists(peaks_file):
             logger.warning("  No peaks file found — skipping background model")
             return {'skipped': True, 'reason': 'no peaks file'}
 
-        # load_peaks returns (peaks_by_chr, peak_ids_by_chr, peaks_df)
         peaks_by_chr, peak_ids_by_chr, peaks_df = load_peaks(
             peaks_file,
             standard_chroms_only=self.standard_chroms_only,
             cytoband_file=self.cytoband_file,
         )
 
-        # classify_pets returns a DataFrame with 'category' column
         pets_df = classify_pets(
             bedpe_file=dedup_bedpe,
             peaks_by_chr=peaks_by_chr,
@@ -525,15 +419,12 @@ class ChiaPetPipeline:
                     f"P2D: {classify_counts.get('P2D', 0):,}  "
                     f"D2D: {classify_counts.get('D2D', 0):,}")
 
-        # export_by_category writes {prefix}.P2P_pets.txt, .P2D_pets.txt, .D2D_pets.txt
         classify_prefix = os.path.join(classified_dir, sample_id)
         export_by_category(pets_df, classify_prefix)
 
         p2p_file = f"{classify_prefix}.P2P_pets.txt"
         d2d_file = f"{classify_prefix}.D2D_pets.txt"
 
-        # --- 4b: Extract templates ---
-        logger.info("  [4b] Extracting templates from P2P PETs...")
         templates_csv = os.path.join(templates_dir, f"{sample_id}_templates.csv")
 
         extract_templates(
@@ -545,8 +436,6 @@ class ChiaPetPipeline:
         )
         stats['templates_csv'] = templates_csv
 
-        # --- 4c: Background sampling phase 1 (NB fitting) ---
-        logger.info("  [4c] Background sampling phase 1 (NB parameter estimation)...")
         templates_nb_csv = os.path.join(templates_dir, f"{sample_id}_templates_with_nb.csv")
 
         sampler = BackgroundSamplingPhase1(
@@ -559,8 +448,6 @@ class ChiaPetPipeline:
         )
         stats['templates_nb_csv'] = templates_nb_csv
 
-        # --- 4d: Background sampling phase 2 (p-values) ---
-        logger.info("  [4d] Calculating p-values (PMF / NB)...")
         pvalues_csv = os.path.join(templates_dir, f"{sample_id}_templates_with_pvalues.csv")
 
         calculate_pvalues(
@@ -569,8 +456,6 @@ class ChiaPetPipeline:
         )
         stats['pvalues_csv'] = pvalues_csv
 
-        # --- 4e: FDR correction ---
-        logger.info("  [4e] Applying FDR correction...")
         loops_csv = os.path.join(results_dir, f"{sample_id}_significant_loops.csv")
 
         apply_fdr_corrections(
@@ -583,12 +468,8 @@ class ChiaPetPipeline:
 
         return stats
 
-    # ------------------------------------------------------------------
-    # Per-step stats persistence (enables resume-safe QC)
-    # ------------------------------------------------------------------
-
-    @staticmethod
     def _save_step_stats(
+        self,
         steps_dir: str,
         key: str,
         stats: Any,
@@ -605,11 +486,10 @@ class ChiaPetPipeline:
             }
             with open(path, 'w') as fh:
                 json.dump(payload, fh, default=_json_default, indent=2)
-        except Exception as exc:  # persistence is best-effort
+        except Exception as exc:
             logger.warning(f"  Could not persist {key} to {steps_dir}: {exc}")
 
-    @staticmethod
-    def _load_prior_steps(steps_dir: str) -> Dict[str, Any]:
+    def _load_prior_steps(self, steps_dir: str) -> Dict[str, Any]:
         """Load any previously-saved step JSONs back into a stats dict."""
         out: Dict[str, Any] = {'timing': {}}
         if not os.path.isdir(steps_dir):
@@ -632,13 +512,8 @@ class ChiaPetPipeline:
                 if tkey and isinstance(secs, (int, float)):
                     out['timing'][tkey] = float(secs)
             else:
-                # Back-compat: file may contain the stats dict directly.
                 out[key] = payload
         return out
-
-    # ------------------------------------------------------------------
-    # QC report
-    # ------------------------------------------------------------------
 
     def _write_qc_report(self, all_stats: Dict, qc_dir: str, sample_id: str):
         """Write a plain-text QC / timing summary and a JSON companion."""
@@ -654,7 +529,6 @@ class ChiaPetPipeline:
         bedpe_map = map_stats.get('bedpe', {}) or {}
         classify  = loop_stats.get('classify', {}) or {}
 
-        # --- Resolve canonical values ---------------------------------------
         total_reads_lf = filter_stats.get('total_reads', filter_stats.get('total_pairs'))
         valid_pets_lf  = filter_stats.get('valid_pets',  filter_stats.get('passing_pairs'))
 
@@ -667,8 +541,6 @@ class ChiaPetPipeline:
         num_peaks  = peak_stats.get('num_peaks')
         peaks_file = peak_stats.get('peaks_file', 'N/A')
 
-        # summarize_classification() returns uppercase keys; keep a back-compat
-        # read for any older cached JSONs that used lowercase.
         p2p = classify.get('P2P', classify.get('p2p_count'))
         p2d = classify.get('P2D', classify.get('p2d_count'))
         d2d = classify.get('D2D', classify.get('d2d_count'))
@@ -676,7 +548,6 @@ class ChiaPetPipeline:
         templates_csv = loop_stats.get('templates_csv', 'N/A')
         loops_csv     = loop_stats.get('loops_csv', 'N/A')
 
-        # --- Structured JSON payload ---------------------------------------
         summary = {
             'sample_id': sample_id,
             'linker_filtering': {
@@ -714,7 +585,6 @@ class ChiaPetPipeline:
             },
         }
 
-        # --- Plain-text report ---------------------------------------------
         lines = [
             "=" * 70,
             f"ChIA-PET PIPELINE SUMMARY  —  {sample_id}",

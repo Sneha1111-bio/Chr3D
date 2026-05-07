@@ -1,29 +1,4 @@
-"""
-Linker Filtering Module v3 - High-Performance with Parasail SIMD
-
-Major improvements over v2:
-- Uses parasail library with SIMD vectorization (10-50x faster alignment)
-- Supports SSE4.1, AVX2, AVX512 instruction sets
-- True parallel processing with multiprocessing.Pool (bypasses GIL)
-- Chunk-based processing for maximum CPU utilization
-- Optimized for short linker sequences (20-30bp)
-
-PERFORMANCE:
-- parasail AVX2 single thread: ~50,000 alignments/sec
-- parasail AVX2 24 threads: ~1,000,000 alignments/sec
-- Expected 10-50x speedup over Bio.Align
-
-USAGE:
-    # Basic filtering with all CPUs
-    python -m chr3d.linker_filtering_v3 \\
-        --r1 R1.fastq.gz --r2 R2.fastq.gz \\
-        --output-prefix filtered --threads 24
-    
-    # Chunk-based parallel processing (recommended for large files)
-    python -m chr3d.linker_filtering_v3 \\
-        --r1 R1.fastq.gz --r2 R2.fastq.gz \\
-        --output-prefix filtered --threads 24 --chunks 6
-"""
+"""Linker Filtering Module - High-Performance with Parasail SIMD."""
 
 import logging
 import gzip
@@ -47,16 +22,13 @@ except ImportError:
 
 from Bio.Seq import Seq
 
-# Use centralized logging
 from ..utils.logging import get_logger
 
-# Get module logger
 logger = get_logger(__name__)
 
 
 class PerformanceStats:
     """Track performance statistics."""
-    
     def __init__(self):
         self.start_time = None
         self.end_time = None
@@ -131,24 +103,9 @@ def align_linker_parasail(
     gap_open: int,
     gap_extend: int
 ) -> Tuple[int, int]:
-    """
-    Perform local alignment using parasail (SIMD-optimized).
-    
-    Args:
-        linker: Linker sequence
-        read_seq: Read sequence
-        matrix: Parasail substitution matrix
-        gap_open: Gap opening penalty
-        gap_extend: Gap extension penalty
-        
-    Returns:
-        Tuple of (score, linker_start_in_read)
-    """
+    """Perform local alignment using parasail (SIMD-optimized)."""
     if not linker or not read_seq or len(read_seq) < 10:
         return 0, -1
-    
-    # Parasail local alignment (Smith-Waterman) with striped SIMD
-    # sw_trace_striped_16 is fastest for short sequences
     try:
         result = parasail.sw_trace_striped_16(
             linker,
@@ -159,17 +116,9 @@ def align_linker_parasail(
         )
         
         score = result.score
-        
         if score <= 0:
             return 0, -1
-        
-        # Calculate linker start position in read
-        # end_ref is the 0-indexed end position of alignment in reference (read)
-        # linker_start = end_ref - (aligned_length - 1)
-        # For perfect match: linker_start = end_ref - len(linker) + 1
         linker_start = result.end_ref - len(linker) + 1
-        
-        # Tag is everything before the linker
         tag_end = linker_start
         
         return score, tag_end
@@ -187,19 +136,12 @@ def find_best_linker_parasail(
     gap_extend: int,
     check_rc: bool
 ) -> Tuple[int, int, int, int, bool]:
-    """
-    Find best matching linker using parasail.
-    
-    Returns:
-        Tuple of (best_linker_idx, best_score, tag_end_pos, score_diff, is_rc)
-    """
+    """Find best matching linker using parasail."""
     best_score = -1
     second_best_score = -1
     best_linker_idx = -1
     best_tag_end = -1
     is_rc = False
-    
-    # Try forward linkers
     for idx, linker in enumerate(linkers):
         score, tag_end = align_linker_parasail(
             linker, read_seq, matrix, gap_open, gap_extend
@@ -213,8 +155,6 @@ def find_best_linker_parasail(
             is_rc = False
         elif score > second_best_score:
             second_best_score = score
-    
-    # Try reverse complement
     if check_rc and linkers_rc:
         for idx, linker_rc in enumerate(linkers_rc):
             score, tag_end = align_linker_parasail(
@@ -235,7 +175,6 @@ def find_best_linker_parasail(
     return best_linker_idx, best_score, best_tag_end, score_diff, is_rc
 
 
-# Global variables for multiprocessing (avoid pickling)
 _LINKERS = None
 _LINKERS_RC = None
 _MATRIX = None
@@ -251,8 +190,7 @@ _CHECK_RC = None
 def init_worker(linkers, linkers_rc, match, mismatch, gap_open, gap_extend,
                 min_score, min_tag, max_tag, min_diff, check_rc):
     """Initialize worker process with shared data."""
-    global _LINKERS, _LINKERS_RC, _MATRIX, _GAP_OPEN, _GAP_EXTEND
-    global _MIN_SCORE, _MIN_TAG, _MAX_TAG, _MIN_DIFF, _CHECK_RC
+    global _LINKERS, _LINKERS_RC, _MATRIX, _GAP_OPEN, _GAP_EXTEND, _MIN_SCORE, _MIN_TAG, _MAX_TAG, _MIN_DIFF, _CHECK_RC
     
     _LINKERS = linkers
     _LINKERS_RC = linkers_rc
@@ -267,46 +205,27 @@ def init_worker(linkers, linkers_rc, match, mismatch, gap_open, gap_extend,
 
 
 def process_read_pair_worker(args):
-    """
-    Process a single read pair (worker function for multiprocessing).
-    
-    Args:
-        args: Tuple of (read1_id, read1_seq, read1_qual, read2_id, read2_seq, read2_qual)
-        
-    Returns:
-        Tuple of (result_dict or None, failure_reason, alignment_count)
-    """
+    """Process a single read pair (worker function for multiprocessing)."""
     read1_id, read1_seq, read1_qual, read2_id, read2_seq, read2_qual = args
-    
     alignment_count = 0
-    
-    # Find best linker for R1
     linker1_idx, score1, tag_end1, diff1, is_rc1 = find_best_linker_parasail(
         read1_seq, _LINKERS, _LINKERS_RC, _MATRIX, _GAP_OPEN, _GAP_EXTEND,
         _MIN_TAG, _CHECK_RC
     )
     alignment_count += len(_LINKERS) * (2 if _CHECK_RC else 1)
-    
-    # Find best linker for R2
     linker2_idx, score2, tag_end2, diff2, is_rc2 = find_best_linker_parasail(
         read2_seq, _LINKERS, _LINKERS_RC, _MATRIX, _GAP_OPEN, _GAP_EXTEND,
         _MIN_TAG, _CHECK_RC
     )
     alignment_count += len(_LINKERS) * (2 if _CHECK_RC else 1)
-    
-    # Check alignment scores
     if score1 < _MIN_SCORE or score2 < _MIN_SCORE:
         return None, 'alignment_score', alignment_count
-    
-    # Check tag lengths
     tag_len1 = tag_end1
     tag_len2 = tag_end2
     
     if (tag_len1 < _MIN_TAG or tag_len1 > _MAX_TAG or
         tag_len2 < _MIN_TAG or tag_len2 > _MAX_TAG):
         return None, 'tag_length', alignment_count
-    
-    # Check ambiguity
     if diff1 < _MIN_DIFF or diff2 < _MIN_DIFF:
         return None, 'ambiguous_linker', alignment_count
     
@@ -331,66 +250,33 @@ def process_read_pair_worker(args):
     return result, None, alignment_count
 
 
-# Linker label helpers for ChIA-PET Tool V3 categories
-# Original tool uses: AA, AB, BA, BB, AX, XA, BX, XB, XX
-# Where X = no linker detected in that read
+# Linker label helpers for ChIA-PET Tool categories
 _LINKER_NAMES = {0: 'A', 1: 'B'}
-_X = 'X'  # No linker detected
+_X = 'X'
 
-
-def _make_category_key(r1_label, r2_label):
+def _linker_category(linker1_idx, linker2_idx):
     """Create a category string like 'AB', 'AX', 'XB', etc."""
+    r1_label = _LINKER_NAMES.get(linker1_idx, _X)
+    r2_label = _LINKER_NAMES.get(linker2_idx, _X)
     return f"{r1_label}{r2_label}"
 
 
-def _is_same_linker(cat, linkers_are_rc_pairs):
-    """
-    Determine if a PET category is 'same-linker' per ChIA-PET Tool V3 logic.
-    
-    When linkers are reverse complement pairs (standard ChIA-PET):
-      - R1 reads forward strand, R2 reads reverse strand
-      - If original linker is A: R1 sees A, R2 sees revcomp(A) = B
-      - So AB and BA are SAME-linker (opposite strands of same linker)
-      - AA and BB are DIFF-linker (would require two different linkers)
-      - AX, XA, BX, XB are classified by the one detected linker (same-linker)
-    
-    When linkers are NOT RC pairs (independent barcodes):
-      - AA and BB are same-linker
-      - AB and BA are diff-linker
-      - AX/XA classified as same-linker A; BX/XB as same-linker B
-    """
+def _is_same_linker(category, linkers_are_rc_pairs=False):
+    """Determine if a linker category represents same-linker or different-linker PETs."""
     if linkers_are_rc_pairs:
-        # AB, BA = same-linker (strand effect); AA, BB = diff-linker (rare)
-        # Single-read: AX, XA, BX, XB = same-linker (classified by detected read)
-        return cat in ('AB', 'BA', 'AX', 'XA', 'BX', 'XB')
+        return category in ('AB', 'BA', 'AX', 'XA', 'BX', 'XB')
     else:
-        # Standard: AA, BB = same-linker; AB, BA = diff-linker
-        # Single-read: AX, XA = same-linker A; BX, XB = same-linker B
-        return cat in ('AA', 'BB', 'AX', 'XA', 'BX', 'XB')
+        return category in ('AA', 'BB', 'AX', 'XA', 'BX', 'XB')
 
 
 def process_chunk_file(args):
-    """
-    Process a chunk file and return filtered results.
-    
-    Implements ChIA-PET Tool V3 classification logic:
-    - Accepts PETs where EITHER read has a linker (not requiring both)
-    - Uses categories: AA, AB, BA, BB, AX, XA, BX, XB
-    - Strand-aware same-linker classification when linkers are RC pairs
-    
-    Args:
-        args: Tuple of (chunk_r1, chunk_r2, output_dir, chunk_idx, params)
-        
-    Returns:
-        Dictionary with stats
-    """
+    """Process a chunk file and return filtered results."""
     chunk_r1, chunk_r2, output_dir, chunk_idx, params = args
     
     linkers = params['linkers']
     linkers_rc = params['linkers_rc']
     linkers_are_rc_pairs = params.get('linkers_are_rc_pairs', False)
     
-    # Create substitution matrix
     matrix = parasail.matrix_create("ACGT", params['match'], -params['mismatch'])
     
     stats = {
@@ -408,12 +294,9 @@ def process_chunk_file(args):
         'alignments': 0
     }
     
-    # Open output files — support all categories including single-read (X)
     output_path = Path(output_dir)
     n_linkers = len(linkers)
     output_files = {}
-    
-    # All possible labels: linker indices + X (no linker)
     all_labels = list(range(n_linkers)) + [_X]
     for i in all_labels:
         for j in all_labels:
@@ -429,20 +312,16 @@ def process_chunk_file(args):
             }
     
     try:
-        # Open input files
         open_func = gzip.open if chunk_r1.endswith('.gz') else open
         mode = 'rt' if chunk_r1.endswith('.gz') else 'r'
         
         with open_func(chunk_r1, mode) as f1, open_func(chunk_r2, mode) as f2:
             while True:
-                # Read 4 lines from each file
                 r1_lines = [f1.readline() for _ in range(4)]
                 r2_lines = [f2.readline() for _ in range(4)]
                 
                 if not r1_lines[0]:
                     break
-                
-                # Check if R2 also has data (files should be same length)
                 if not r2_lines[0]:
                     logger.warning(f"R2 file ended before R1 at read {stats['total_reads']}")
                     break
@@ -455,19 +334,12 @@ def process_chunk_file(args):
                 read2_id = r2_lines[0].strip()
                 read2_seq = r2_lines[1].strip()
                 read2_qual = r2_lines[3].strip()
-                
-                # CRITICAL: Validate read IDs match (fix for pairing bug)
-                # Extract base read ID (remove description after space, keep core ID)
-                r1_base_id = read1_id.split()[0]  # Remove description after space
+                r1_base_id = read1_id.split()[0]
                 r2_base_id = read2_id.split()[0]
-                
-                # Remove @ prefix if present
                 if r1_base_id.startswith('@'):
                     r1_base_id = r1_base_id[1:]
                 if r2_base_id.startswith('@'):
                     r2_base_id = r2_base_id[1:]
-                
-                # Only remove /1 or /2 suffix (NOT .1 or .2 which are SRA read numbers)
                 if r1_base_id.endswith('/1'):
                     r1_base_id = r1_base_id[:-2]
                 if r2_base_id.endswith('/2'):
@@ -478,34 +350,24 @@ def process_chunk_file(args):
                     if stats['failed_read_id_mismatch'] <= 5:
                         logger.warning(f"Read ID mismatch: R1={read1_id[:60]} vs R2={read2_id[:60]}")
                     continue
-                
-                # Find best linker for R1
                 linker1_idx, score1, tag_end1, diff1, is_rc1 = find_best_linker_parasail(
                     read1_seq, linkers, linkers_rc, matrix,
                     params['gap_open'], params['gap_extend'],
                     params['check_rc']
                 )
                 stats['alignments'] += len(linkers) * (2 if params['check_rc'] else 1)
-                
-                # Find best linker for R2
                 linker2_idx, score2, tag_end2, diff2, is_rc2 = find_best_linker_parasail(
                     read2_seq, linkers, linkers_rc, matrix,
                     params['gap_open'], params['gap_extend'],
                     params['check_rc']
                 )
                 stats['alignments'] += len(linkers) * (2 if params['check_rc'] else 1)
-                
-                # Determine which reads pass the score threshold
                 r1_has_linker = score1 >= params['min_score']
                 r2_has_linker = score2 >= params['min_score']
                 
-                # FIX #1: Accept PETs where EITHER read has a linker
-                # (Original tool uses AX/XA/BX/XB categories for single-read)
                 if not r1_has_linker and not r2_has_linker:
                     stats['failed_both_no_linker'] += 1
                     continue
-                
-                # Validate passing reads: check tag length and ambiguity
                 r1_valid = False
                 r2_valid = False
                 
@@ -529,17 +391,12 @@ def process_chunk_file(args):
                     else:
                         r2_valid = True
                 
-                # After validation, need at least one valid read
                 if not r1_valid and not r2_valid:
                     stats['failed_tag_length'] += 1
                     continue
-                
-                # Assign labels: linker index or X
                 r1_label = linker1_idx if r1_valid else _X
                 r2_label = linker2_idx if r2_valid else _X
                 
-                # Extract tags — for reads with linker, trim to tag;
-                # for reads without linker (X), keep full read
                 if r1_valid:
                     tag1_seq = read1_seq[:tag_end1]
                     tag1_qual = read1_qual[:tag_end1]
@@ -553,19 +410,13 @@ def process_chunk_file(args):
                 else:
                     tag2_seq = read2_seq
                     tag2_qual = read2_qual
-                
-                # Write to output
                 key = (r1_label, r2_label)
                 output_files[key]['r1'].write(f"{read1_id}\n{tag1_seq}\n+\n{tag1_qual}\n")
                 output_files[key]['r2'].write(f"{read2_id}\n{tag2_seq}\n+\n{tag2_qual}\n")
                 
                 stats['valid_pets'] += 1
                 stats['linker_composition'][key] += 1
-                
-                # FIX #2: Strand-aware same/diff-linker classification
-                r1_name = _LINKER_NAMES.get(r1_label, _X) if isinstance(r1_label, int) else _X
-                r2_name = _LINKER_NAMES.get(r2_label, _X) if isinstance(r2_label, int) else _X
-                cat = _make_category_key(r1_name, r2_name)
+                cat = _linker_category(r1_label, r2_label)
                 stats['category_counts'][cat] += 1
                 
                 if _is_same_linker(cat, linkers_are_rc_pairs):
@@ -584,12 +435,9 @@ def process_chunk_file(args):
     return stats
 
 
-class LinkerFilterV3:
+class LinkerFilter:
     """
     High-performance linker filtering using parasail SIMD alignment.
-    
-    Parasail provides 10-50x speedup over Bio.Align for short sequence alignment.
-    Uses multiprocessing.Pool for true parallel processing (bypasses GIL).
     """
     
     def __init__(
@@ -635,9 +483,6 @@ class LinkerFilterV3:
         self.gap_open_penalty = gap_open_penalty
         self.gap_extend_penalty = gap_extend_penalty
         self.n_threads = n_threads or cpu_count()
-        
-        # Auto-detect if linkers are already RC pairs (common in ChIA-PET)
-        # If so, disable RC checking to avoid false ambiguity
         self.linkers_are_rc_pairs = False
         if len(linker_sequences) == 2:
             rc_of_first = reverse_complement(linker_sequences[0])
@@ -650,20 +495,14 @@ class LinkerFilterV3:
             self.check_reverse_complement = False
         else:
             self.check_reverse_complement = check_reverse_complement
-        
-        # Precompute reverse complements
         if self.check_reverse_complement:
             self.linker_sequences_rc = [reverse_complement(seq) for seq in linker_sequences]
         else:
             self.linker_sequences_rc = []
-        
-        # Performance tracking
         self.perf_stats = PerformanceStats()
-        
-        # Detect SIMD
         self.simd_name = detect_simd()
         
-        logger.info(f"Initialized LinkerFilterV3 with parasail")
+        logger.info(f"Initialized LinkerFilter with parasail")
         logger.info(f"  SIMD instruction set: {self.simd_name}")
         logger.info(f"  Linker sequences: {len(linker_sequences)}")
         logger.info(f"  Linkers are RC pairs: {self.linkers_are_rc_pairs}")
@@ -687,9 +526,6 @@ class LinkerFilterV3:
         import subprocess
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        
-        # Count total reads — use fast OS-level wc -l for plain files,
-        # fall back to zcat | wc -l for gzipped files (avoids slow Python line loop)
         logger.info("Counting reads for splitting...")
         try:
             if r1_file.endswith('.gz'):
@@ -1070,7 +906,7 @@ Performance:
     print("=" * 70)
     
     # Initialize filter
-    linker_filter = LinkerFilterV3(
+    linker_filter = LinkerFilter(
         linker_sequences=[args.linker_a, args.linker_b],
         min_alignment_score=args.min_score,
         min_tag_length=args.min_tag,

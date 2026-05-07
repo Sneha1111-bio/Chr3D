@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║   TEMPLATE EXTRACTION - Generate templates.csv from P2P PETs                ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║  PURPOSE:                                                                    ║
-║  - Read P2P_pets.txt with peak information                                  ║
-║  - Group by peak pairs to create unique templates                           ║
-║  - Calculate template parameters (width1, width2, distance)                 ║
-║  - Save templates.csv with all peak information                             ║
-║  - Ready for background sampling later                                      ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+Template Extraction - Generate templates.csv from P2P PETs
+
+Read P2P_pets.txt with peak information, group by peak pairs to create
+unique templates, calculate template parameters (width1, width2, distance),
+and save templates.csv with all peak information.
 """
 
 import logging
@@ -78,9 +73,7 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
         peak_file: Path to broadPeak file
         output_file: Path to output templates.csv
     """
-    logger.info("╔════════════════════════════════════════════════════════════════════╗")
-    logger.info("║   TEMPLATE EXTRACTION FROM P2P PETS                                ║")
-    logger.info("╚════════════════════════════════════════════════════════════════════╝")
+    logger.info("TEMPLATE EXTRACTION FROM P2P PETS")
     
     # Load problematic regions if cytoband file provided
     problematic_regions = {}
@@ -105,7 +98,7 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
         n_threads=0
     )
 
-    # Vectorized lookup dicts built via Polars (no iterrows)
+    # Build lookup dicts
     peak_widths    = dict(zip(
         peaks_pl['name'].to_list(),
         (peaks_pl['end'] - peaks_pl['start']).to_list()
@@ -119,7 +112,7 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
     logger.info(f"  Loaded {len(peaks_pl):,} peaks")
     logger.info(f"  Peak width range: {widths_arr.min()}-{widths_arr.max()} bp")
     
-    # Load P2P PETs with peak information using Polars (fast multi-threaded I/O)
+    # Load P2P PETs with peak information
     logger.info(f"\nLoading P2P PETs from: {p2p_file}")
     p2p_pl = pl.read_csv(p2p_file, separator='\t', n_threads=0, infer_schema_length=10000)
     
@@ -134,7 +127,7 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
     
     logger.info(f"  P2P PETs with peak info: {len(p2p_with_peaks):,}")
     
-    # Group by peak pairs to create templates using Polars groupby
+    # Group by peak pairs to create templates
     logger.info("\nCreating templates by grouping peak pairs...")
 
     agg = (
@@ -150,7 +143,7 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
     )
     logger.info(f"  Total unique peak pairs: {len(agg):,}")
 
-    # Vectorized width + distance lookup via Polars map_elements
+    # Width + distance lookup
     agg = agg.with_columns([
         pl.col('peak1_id').map_elements(lambda x: peak_widths.get(x, 1), return_dtype=pl.Int64).alias('Width1'),
         pl.col('peak2_id').map_elements(lambda x: peak_widths.get(x, 1), return_dtype=pl.Int64).alias('Width2'),
@@ -278,7 +271,7 @@ def extract_templates(p2p_file: str, peak_file: str, output_file: str,
         template_df = template_df.with_columns(pl.Series('template_idx', range(1, len(template_df) + 1)))
         logger.info(f"\nTotal templates after filtering: {len(template_df):,} (reduced from {original_count:,})")
     
-    # Save to CSV using Polars (multi-threaded write)
+    # Save to CSV
     logger.info(f"\nSaving templates to: {output_file}")
     template_df.write_csv(output_file)
     logger.info(f"  File size: {Path(output_file).stat().st_size / 1024 / 1024:.2f} MB")

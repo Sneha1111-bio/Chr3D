@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║   BACKGROUND SAMPLING - PHASE 1: NB Parameter Estimation                    ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║  PURPOSE:                                                                    ║
-║  - Load templates.csv with peak information                                 ║
-║  - Load D2D PETs for background sampling                                    ║
-║  - For each template: sample background counts (10,000 samples)            ║
-║  - Fit Negative Binomial distribution to get r and p parameters             ║
-║  - Update templates.csv with r and p columns                                ║
-║  - Save per-template background count files (optional)                      ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+Background Sampling - Phase 1: NB Parameter Estimation
+
+Load templates.csv with peak information, load D2D PETs for background
+sampling, sample background counts for each template, fit Negative Binomial
+distribution to get r and p parameters, and update templates.csv.
 """
 
 import logging
@@ -75,17 +69,13 @@ def sample_template_background(args):
     if max_start <= 0:
         return result
 
-    # ── Vectorized batch sampling ────────────────────────────────────────
-    # Generate ALL random start positions at once (shape: n_samples)
+    # Batch sampling: generate ALL random start positions at once
     r1_starts = np.random.randint(0, max_start + 1, size=n_samples)
     r1_ends   = r1_starts + width1          # region-1 end
     r2_starts = r1_ends   + distance        # region-2 start
     r2_ends   = r2_starts + width2          # region-2 end
 
-    # For each sample, count D2D PETs whose mid1 falls in region-1
-    # and whose mid2 falls in the corresponding region-2.
-    #
-    # searchsorted gives the slice [lo, hi) of d2d_mid1 inside [r1_s, r1_e]
+    # Count D2D PETs whose mid1 falls in region-1 and mid2 in region-2
     los = np.searchsorted(d2d_mid1, r1_starts, side='left')
     his = np.searchsorted(d2d_mid1, r1_ends,   side='right')
 
@@ -95,10 +85,6 @@ def sample_template_background(args):
         if lo < hi:
             sub = d2d_mid2[lo:hi]
             counts[i] = int(((sub >= r2_starts[i]) & (sub <= r2_ends[i])).sum())
-    # Note: the inner loop is over unique (lo,hi) ranges per sample.
-    # For the typical case where most samples have lo==hi (count=0),
-    # the body is skipped entirely, making this ~10-50x faster than the
-    # original Python loop.
     
     if len(counts) > 0:
         mean = float(counts.mean())
@@ -177,9 +163,7 @@ class BackgroundSamplingPhase1:
         self.d2d_global = {}  # Global background for trans templates
         self.chrom_lengths = {}
         
-        logger.info("╔════════════════════════════════════════════════════════════════════╗")
-        logger.info("║   BACKGROUND SAMPLING - PHASE 1: NB Parameter Estimation          ║")
-        logger.info("╚════════════════════════════════════════════════════════════════════╝")
+        logger.info("BACKGROUND SAMPLING - PHASE 1: NB Parameter Estimation")
         logger.info(f"  Samples/template : {samples_per_template:,}")
         logger.info(f"  CPU cores        : {self.n_cores}")
         logger.info(f"  Sampling mode    : {'Chromosome-specific' if chrom_specific else 'Global'}")
@@ -191,7 +175,7 @@ class BackgroundSamplingPhase1:
         logger.info(f"{'='*70}")
         logger.info(f"  File: {d2d_file}")
         
-        # Load D2D PETs with Polars (multi-threaded I/O)
+        # Load D2D PETs
         d2d_pl = pl.read_csv(
             d2d_file, separator='\t', has_header=False,
             infer_schema_length=10000, n_threads=0
@@ -271,7 +255,7 @@ class BackgroundSamplingPhase1:
         logger.info(f"PROCESSING TEMPLATES")
         logger.info(f"{'='*70}")
         
-        # Load templates with Polars then convert to pandas for array indexing
+        # Load templates
         logger.info(f"  Loading templates from: {templates_file}")
         templates = pl.read_csv(templates_file, n_threads=0).to_pandas()
         logger.info(f"  Total templates: {len(templates):,}")
@@ -317,7 +301,7 @@ class BackgroundSamplingPhase1:
         logger.info(f"\n  Sampling background for {len(args_list):,} templates...")
         logger.info(f"  Using {self.n_cores} cores")
 
-        # imap_unordered keeps all workers fed; chunksize balances dispatch overhead
+        # imap_unordered keeps all workers fed
         dispatch_chunksize = max(1, len(args_list) // (self.n_cores * 8))
         with mp.Pool(processes=self.n_cores) as pool:
             results = list(tqdm(
@@ -334,7 +318,7 @@ class BackgroundSamplingPhase1:
         # Add results to templates dataframe
         logger.info(f"\n  Adding NB parameters to templates...")
 
-        # Vectorized result assembly: build per-column arrays, then assign at once
+        # Build per-column arrays, then assign at once
         n = len(templates)
         r_arr        = np.full(n, np.nan)
         p_arr        = np.full(n, np.nan)
@@ -366,7 +350,7 @@ class BackgroundSamplingPhase1:
         templates['background_sampling_count'] = count_arr
         templates['n_background_samples']      = nsamples_arr
         
-        # Summary statistics (same format as v8_pmf)
+        # Summary statistics
         logger.info(f"\n{'='*70}")
         logger.info(f"FITTING RESULTS SUMMARY")
         logger.info(f"{'='*70}")
@@ -392,7 +376,7 @@ class BackgroundSamplingPhase1:
             logger.info(f"    Background sampling mean - avg={valid_templates['background_sampling_mean'].mean():.3f}")
             logger.info(f"    Background sampling variance - avg={valid_templates['background_sampling_variance'].mean():.3f}")
         
-        # Save updated templates with Polars (faster write)
+        # Save updated templates
         logger.info(f"\n  Saving updated templates to: {output_file}")
         pl.from_pandas(templates).write_csv(output_file)
         

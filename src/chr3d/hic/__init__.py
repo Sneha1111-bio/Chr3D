@@ -22,7 +22,7 @@ __all__ = [
     'HiCSamProcessor',
     'HiCPairsProcessor',
     'HiCMatrixGenerator',
-    'HiCPipeline',
     'HiCQCAnalyzer',
+    'HiCPipeline',
     'SnHiCPipeline',
 ]

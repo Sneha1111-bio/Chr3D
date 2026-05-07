@@ -1,144 +1,19 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                    PET CLASSIFICATION BY PEAK OVERLAP                        ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  This script classifies Paired-End Tags (PETs) from a BEDPE file based on   ║
-║  whether their anchors overlap with broad peaks from MACS3 peak calling.    ║
-║                                                                              ║
-║  NOTE: We classify PETs directly from BEDPE, NOT loops. Loops are formed    ║
-║  AFTER significance testing. This is the raw PET classification step.       ║
-║                                                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                         THREE CLASSIFICATION CATEGORIES                       ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  1. Peak-to-Peak (P2P): Both anchors overlap broad peaks                    ║
-║     ┌─────────────────────────────────────────────────────────────────┐     ║
-║     │  Anchor 1 (Read 1)              Anchor 2 (Read 2)               │     ║
-║     │       ████                           ████                       │     ║
-║     │    ╔════════╗                     ╔════════╗                    │     ║
-║     │    ║ PEAK 1 ║                     ║ PEAK 2 ║                    │     ║
-║     │    ╚════════╝                     ╚════════╝                    │     ║
-║     │         ↑                              ↑                        │     ║
-║     │      OVERLAP                        OVERLAP                     │     ║
-║     │                                                                 │     ║
-║     │  → Both anchors land on peaks = P2P (regulatory interaction)   │     ║
-║     └─────────────────────────────────────────────────────────────────┘     ║
-║                                                                              ║
-║  2. Peak-to-Distal (P2D): One anchor overlaps peak, other doesn't           ║
-║     ┌─────────────────────────────────────────────────────────────────┐     ║
-║     │  Anchor 1 (Read 1)              Anchor 2 (Read 2)               │     ║
-║     │       ████                           ████                       │     ║
-║     │    ╔════════╗                     ░░░░░░░░░░                    │     ║
-║     │    ║ PEAK 1 ║                     (no peak)                     │     ║
-║     │    ╚════════╝                                                   │     ║
-║     │         ↑                              ↑                        │     ║
-║     │      OVERLAP                      NO OVERLAP                    │     ║
-║     │                                                                 │     ║
-║     │  → One anchor on peak, one distal = P2D (enhancer-promoter?)   │     ║
-║     └─────────────────────────────────────────────────────────────────┘     ║
-║                                                                              ║
-║  3. Distal-to-Distal (D2D): Neither anchor overlaps peaks                   ║
-║     ┌─────────────────────────────────────────────────────────────────┐     ║
-║     │  Anchor 1 (Read 1)              Anchor 2 (Read 2)               │     ║
-║     │       ████                           ████                       │     ║
-║     │    ░░░░░░░░░░                     ░░░░░░░░░░                    │     ║
-║     │    (no peak)                      (no peak)                     │     ║
-║     │                                                                 │     ║
-║     │         ↑                              ↑                        │     ║
-║     │    NO OVERLAP                     NO OVERLAP                    │     ║
-║     │                                                                 │     ║
-║     │  → Neither anchor on peak = D2D (background or structural?)    │     ║
-║     └─────────────────────────────────────────────────────────────────┘     ║
-║                                                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                         ALGORITHM OVERVIEW                                    ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  STEP 1: Load Peaks (organized by chromosome for O(1) lookup)               ║
-║  ┌────────────────────────────────────────────────────────────────────┐     ║
-║  │  peaks_by_chr = {                                                  │     ║
-║  │      'chr1': [[start1, end1], [start2, end2], ...],               │     ║
-║  │      'chr2': [[start1, end1], [start2, end2], ...],               │     ║
-║  │      ...                                                           │     ║
-║  │  }                                                                 │     ║
-║  └────────────────────────────────────────────────────────────────────┘     ║
-║                                                                              ║
-║  STEP 2: Load BEDPE file (each row = one PET with two anchors)              ║
-║  ┌────────────────────────────────────────────────────────────────────┐     ║
-║  │  BEDPE Format:                                                     │     ║
-║  │  chr1  start1  end1  chr2  start2  end2  [optional columns...]    │     ║
-║  │   │      │      │     │      │      │                              │     ║
-║  │   └──────┴──────┘     └──────┴──────┘                              │     ║
-║  │      Anchor 1            Anchor 2                                  │     ║
-║  └────────────────────────────────────────────────────────────────────┘     ║
-║                                                                              ║
-║  STEP 3: For EACH PET (outer loop = PETs, NOT peaks):                       ║
-║  ┌────────────────────────────────────────────────────────────────────┐     ║
-║  │                                                                    │     ║
-║  │  for each PET in BEDPE:                                           │     ║
-║  │      │                                                             │     ║
-║  │      ├─► Check Anchor 1: Does it overlap ANY peak on its chr?     │     ║
-║  │      │   └─► Vectorized: anchor1_start < peak_ends AND            │     ║
-║  │      │                   anchor1_end > peak_starts                 │     ║
-║  │      │                                                             │     ║
-║  │      ├─► Check Anchor 2: Does it overlap ANY peak on its chr?     │     ║
-║  │      │   └─► Same vectorized overlap check                         │     ║
-║  │      │                                                             │     ║
-║  │      └─► Classify based on overlap results:                        │     ║
-║  │          ┌─────────────┬─────────────┬──────────────┐              │     ║
-║  │          │ Anchor1     │ Anchor2     │ Category     │              │     ║
-║  │          ├─────────────┼─────────────┼──────────────┤              │     ║
-║  │          │ IN PEAK     │ IN PEAK     │ P2P          │              │     ║
-║  │          │ IN PEAK     │ NOT IN PEAK │ P2D          │              │     ║
-║  │          │ NOT IN PEAK │ IN PEAK     │ P2D          │              │     ║
-║  │          │ NOT IN PEAK │ NOT IN PEAK │ D2D          │              │     ║
-║  │          └─────────────┴─────────────┴──────────────┘              │     ║
-║  │                                                                    │     ║
-║  └────────────────────────────────────────────────────────────────────┘     ║
-║                                                                              ║
-║  WHY OUTER LOOP IS PETs (not peaks)?                                        ║
-║  ───────────────────────────────────                                        ║
-║  • We have N PETs and M peaks                                               ║
-║  • For each PET, we check 2 anchors against all peaks on that chromosome    ║
-║  • Using vectorized numpy: O(N * 2 * avg_peaks_per_chr)                     ║
-║  • If we looped over peaks first, we'd need complex bookkeeping             ║
-║  • PET-centric approach is simpler and matches our output structure         ║
-║                                                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                         OVERLAP DETECTION DETAIL                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Two intervals overlap if and only if:                                       ║
-║                                                                              ║
-║     anchor_start < peak_end  AND  anchor_end > peak_start                   ║
-║                                                                              ║
-║  Visual proof:                                                               ║
-║                                                                              ║
-║  Case 1: Overlap (anchor overlaps peak)                                     ║
-║     Peak:      |████████████|                                               ║
-║     Anchor:         |██████████|                                            ║
-║                     ↑          ↑                                            ║
-║              anchor_start   anchor_end                                      ║
-║     anchor_start(5) < peak_end(12) ✓                                        ║
-║     anchor_end(15) > peak_start(0) ✓                                        ║
-║     → OVERLAP = True                                                        ║
-║                                                                              ║
-║  Case 2: No overlap (anchor is after peak)                                  ║
-║     Peak:      |████████████|                                               ║
-║     Anchor:                      |██████████|                               ║
-║     anchor_start(20) < peak_end(12) ✗                                       ║
-║     → OVERLAP = False                                                       ║
-║                                                                              ║
-║  Case 3: No overlap (anchor is before peak)                                 ║
-║     Peak:                   |████████████|                                  ║
-║     Anchor:    |██████████|                                                 ║
-║     anchor_end(10) > peak_start(15) ✗                                       ║
-║     → OVERLAP = False                                                       ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+PET Classification by Peak Overlap
+
+Classify Paired-End Tags (PETs) from a BEDPE file based on whether their
+anchors overlap with broad peaks from MACS3 peak calling.
+
+NOTE: We classify PETs directly from BEDPE, NOT loops. Loops are formed
+AFTER significance testing. This is the raw PET classification step.
+
+Categories:
+  1. P2P (Peak-to-Peak): Both anchors overlap broad peaks
+  2. P2D (Peak-to-Distal): One anchor overlaps peak, other doesn't
+  3. D2D (Distal-to-Distal): Neither anchor overlaps peaks
+
+Overlap detection: anchor_start < peak_end AND anchor_end > peak_start
 """
 import polars as pl
 import numpy as np
@@ -165,7 +40,7 @@ def load_cytoband_regions(cytoband_file: str, buffer_size: int = 5_000_000):
     
     problematic_regions = {}
     
-    # Load cytoband file with Polars
+    # Load cytoband file
     cyto = pl.read_csv(cytoband_file, separator='\t', has_header=False,
                        new_columns=['chrom', 'start', 'end', 'band', 'stain'])
     
@@ -201,25 +76,7 @@ def is_peak_in_problematic_region(chrom: str, start: int, end: int, problematic_
 def load_peaks(peak_file, standard_chroms_only=False, cytoband_file=None, centromere_buffer=5_000_000):
     """
     Load broad peaks into a dictionary organized by chromosome.
-    
-    This enables O(1) chromosome lookup and vectorized overlap checking.
-    
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  Input: BroadPeak file from MACS3                               │
-    │  ┌─────────────────────────────────────────────────────────┐   │
-    │  │ chr1  1000  2000  peak1  500  .  10.5  5.2  3.1         │   │
-    │  │ chr1  5000  6000  peak2  400  .  8.3   4.1  2.8         │   │
-    │  │ chr2  3000  4000  peak3  600  .  12.1  6.3  4.2         │   │
-    │  └─────────────────────────────────────────────────────────┘   │
-    │                              ↓                                  │
-    │  Output: Dictionary by chromosome                               │
-    │  ┌─────────────────────────────────────────────────────────┐   │
-    │  │ peaks_by_chr = {                                        │   │
-    │  │     'chr1': array([[1000, 2000], [5000, 6000]]),       │   │
-    │  │     'chr2': array([[3000, 4000]])                       │   │
-    │  │ }                                                       │   │
-    │  └─────────────────────────────────────────────────────────┘   │
-    └─────────────────────────────────────────────────────────────────┘
+    Enables O(1) chromosome lookup and vectorized overlap checking.
     """
     logger.info(f"Loading peaks from: {peak_file}")
     
@@ -246,7 +103,7 @@ def load_peaks(peak_file, standard_chroms_only=False, cytoband_file=None, centro
     if cytoband_file:
         problematic_regions = load_cytoband_regions(cytoband_file, centromere_buffer)
         before = len(peaks_pl)
-        # Build exclusion mask using vectorised Polars expressions per chrom/region
+        # Build exclusion mask
         keep_mask = pl.lit(True)
         for chrom, regions in problematic_regions.items():
             for rs, re in regions:
@@ -262,7 +119,7 @@ def load_peaks(peak_file, standard_chroms_only=False, cytoband_file=None, centro
     if len(peaks_pl) < original_count:
         logger.info(f"  Total peaks after filtering: {len(peaks_pl):,} (reduced from {original_count:,})")
     
-    # Group by chromosome for faster lookup (numpy arrays for overlap kernel)
+    # Group by chromosome for faster lookup
     peaks_by_chr = {}
     peak_ids_by_chr = {}
     
@@ -273,8 +130,7 @@ def load_peaks(peak_file, standard_chroms_only=False, cytoband_file=None, centro
     
     logger.info(f"  Peaks across {len(peaks_by_chr)} chromosomes")
     
-    # Keep a pandas-compatible object for callers that access peaks_df columns;
-    # return as Polars DataFrame (callers only use len() or pass it through)
+    # Return as Polars DataFrame
     return peaks_by_chr, peak_ids_by_chr, peaks_pl
 
 
@@ -301,28 +157,13 @@ def find_peak_id_vectorized(anchor_chr, anchor_pos, peaks_by_chr, peak_ids_by_ch
 def check_overlap(anchor_chr, anchor_start, anchor_end, peaks_by_chr):
     """
     Check if an anchor overlaps ANY peak on its chromosome.
-    
     Uses vectorized numpy operations for efficiency.
-    
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  Overlap Logic (vectorized across all peaks on chromosome):    │
-    │                                                                 │
-    │  For each peak[i] with [peak_start, peak_end]:                 │
-    │                                                                 │
-    │     overlaps[i] = (anchor_start < peak_end[i]) AND             │
-    │                   (anchor_end > peak_start[i])                  │
-    │                                                                 │
-    │  Return: True if ANY overlap exists (np.any(overlaps))         │
-    └─────────────────────────────────────────────────────────────────┘
     """
     if anchor_chr not in peaks_by_chr:
         return False
     
     peaks = peaks_by_chr[anchor_chr]
     
-    # Vectorized overlap check against ALL peaks on this chromosome
-    # peaks[:, 0] = all peak starts
-    # peaks[:, 1] = all peak ends
     overlaps = (anchor_start < peaks[:, 1]) & (anchor_end > peaks[:, 0])
     
     return np.any(overlaps)
@@ -348,22 +189,22 @@ def classify_pet_chunk(chunk_data):
     end2_arr   = chunk_df['end2'].values.astype(np.int64)
 
     for chrom, peaks in peaks_by_chr.items():
-        p_starts = peaks[:, 0]  # shape (M,)
-        p_ends   = peaks[:, 1]  # shape (M,)
+        p_starts = peaks[:, 0]
+        p_ends   = peaks[:, 1]
 
         # Anchor 1 rows on this chrom
         mask1 = (chr1_arr == chrom)
         if mask1.any():
-            s1 = start1_arr[mask1][:, None]  # (K,1)
-            e1 = end1_arr[mask1][:, None]    # (K,1)
+            s1 = start1_arr[mask1][:, None]
+            e1 = end1_arr[mask1][:, None]
             hits1 = ((s1 < p_ends) & (e1 > p_starts)).any(axis=1)
             anchor1_overlaps[mask1] = hits1
 
         # Anchor 2 rows on this chrom
         mask2 = (chr2_arr == chrom)
         if mask2.any():
-            s2 = start2_arr[mask2][:, None]  # (K,1)
-            e2 = end2_arr[mask2][:, None]    # (K,1)
+            s2 = start2_arr[mask2][:, None]
+            e2 = end2_arr[mask2][:, None]
             hits2 = ((s2 < p_ends) & (e2 > p_starts)).any(axis=1)
             anchor2_overlaps[mask2] = hits2
 
@@ -372,20 +213,11 @@ def classify_pet_chunk(chunk_data):
 
 def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=None, include_same_peak=False):
     """
-    Classify PETs from BEDPE file based on peak overlap (PARALLELIZED).
-    
-    ╔═══════════════════════════════════════════════════════════════════╗
-    ║  PARALLEL CLASSIFICATION                                          ║
-    ╠═══════════════════════════════════════════════════════════════════╣
-    ║  1. Split PETs into chunks (one per CPU core)                     ║
-    ║  2. Process chunks in parallel using multiprocessing              ║
-    ║  3. Merge results from all workers                                ║
-    ╚═══════════════════════════════════════════════════════════════════╝
+    Classify PETs from BEDPE file based on peak overlap (parallelized).
     """
     logger.info(f"Loading PETs from BEDPE: {bedpe_file}")
     
     # BEDPE format: chr1 start1 end1 chr2 start2 end2 [optional columns]
-    # Use Polars lazy scan → collect for multi-threaded I/O
     pets_pl = pl.read_csv(
         bedpe_file, separator='\t', has_header=False,
         infer_schema_length=10000, n_threads=0
@@ -413,13 +245,11 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
     
     logger.info(f"  Loaded {len(pets_pl):,} PETs from BEDPE")
     
-    # Convert to pandas for the numpy parallel overlap kernel (minimal copy)
+    # Convert to pandas for the numpy parallel overlap kernel
     import pandas as _pd
     pets_df = pets_pl.to_pandas()
     
-    # ═══════════════════════════════════════════════════════════════════
     # PARALLEL CLASSIFICATION
-    # ═══════════════════════════════════════════════════════════════════
     if n_cores is None:
         n_cores = cpu_count()
 
@@ -435,7 +265,7 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
 
     chunk_data = [(chunk, peaks_by_chr) for chunk in chunks]
 
-    # imap with balanced chunksize keeps all workers busy while preserving order
+    # imap keeps all workers busy while preserving order
     with Pool(processes=n_cores) as pool:
         results = list(pool.imap(
             classify_pet_chunk, chunk_data, chunksize=max(1, len(chunks) // n_cores)
@@ -454,10 +284,8 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
     pets_df['anchor1_in_peak'] = anchor1_overlaps
     pets_df['anchor2_in_peak'] = anchor2_overlaps
     
-    # ═══════════════════════════════════════════════════════════════════
     # PEAK-PAIR COUNTING: Track P2P interactions (same-peak + cross-peak)
-    # AND ADD PEAK INFO TO P2P PETS — vectorized via Polars
-    # ═══════════════════════════════════════════════════════════════════
+    # AND ADD PEAK INFO TO P2P PETS
     logger.info("Counting peak-to-peak interactions and adding peak info to P2P PETs...")
     peak_pair_data = []  # List of (peak1, peak2, count, type)
     
@@ -474,17 +302,17 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
     if len(p2p_pets) > 0:
         logger.info(f"  Processing {len(p2p_pets):,} P2P PETs...")
         
-        # Vectorized midpoint calculation
+        # Midpoint calculation
         p2p_pets['mid1'] = (p2p_pets['start1'].values + p2p_pets['end1'].values) // 2
         p2p_pets['mid2'] = (p2p_pets['start2'].values + p2p_pets['end2'].values) // 2
         
-        # Vectorized peak-ID lookup per chromosome using searchsorted
+        # Peak-ID lookup per chromosome
         def _lookup_peak_ids_for_chrom(chrom, positions, peaks_by_chr, peak_ids_by_chr):
             """Return (peak_idx_array, peak_id_array) for positions on chrom."""
             if chrom not in peaks_by_chr:
                 return np.full(len(positions), -1, dtype=np.int64), np.full(len(positions), None, dtype=object)
-            peaks = peaks_by_chr[chrom]          # (M, 2)
-            ids   = peak_ids_by_chr[chrom]        # list of M ids
+            peaks = peaks_by_chr[chrom]
+            ids   = peak_ids_by_chr[chrom]
             p_starts = peaks[:, 0]
             p_ends   = peaks[:, 1]
             out_idx = np.full(len(positions), -1, dtype=np.int64)
@@ -531,7 +359,7 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
         pets_df.loc[p2p_valid.index, 'peak2_id']    = p2p_valid['peak2_macs'].values
         pets_df.loc[p2p_valid.index, 'type']        = p2p_valid['pet_type'].values
 
-        # ── Polars groupby for pair counting — replaces iterrows ─────────────
+        # Polars groupby for pair counting
         p2p_pl = pl.from_pandas(p2p_valid[[
             'chr1', 'chr2', 'peak1_index_id', 'peak1_macs',
             'peak2_index_id', 'peak2_macs', 'pet_type'
@@ -581,19 +409,7 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
     logger.info(f"  Found {len(peak_pair_data):,} peak-pair entries (same + cross)")
     pets_df.peak_pair_data = peak_pair_data
     
-    # ═══════════════════════════════════════════════════════════════════
     # STEP C: Vectorized category assignment
-    # ═══════════════════════════════════════════════════════════════════
-    #
-    #  ┌─────────────┬─────────────┬──────────────┐
-    #  │ Anchor1     │ Anchor2     │ Category     │
-    #  ├─────────────┼─────────────┼──────────────┤
-    #  │ True        │ True        │ P2P          │
-    #  │ True        │ False       │ P2D          │
-    #  │ False       │ True        │ P2D          │
-    #  │ False       │ False       │ D2D          │
-    #  └─────────────┴─────────────┴──────────────┘
-    #
     pets_df['category'] = 'D2D'  # Default: Distal-to-Distal
     pets_df.loc[pets_df['anchor1_in_peak'] & pets_df['anchor2_in_peak'], 'category'] = 'P2P'
     pets_df.loc[(pets_df['anchor1_in_peak'] ^ pets_df['anchor2_in_peak']), 'category'] = 'P2D'
@@ -604,24 +420,6 @@ def classify_pets(bedpe_file, peaks_by_chr, peak_ids_by_chr, peaks_df, n_cores=N
 def summarize_classification(pets_df):
     """
     Print PET classification summary.
-    
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  Summary Output:                                                │
-    │  ═══════════════════════════════════════════════════════════   │
-    │  PET CLASSIFICATION SUMMARY                                     │
-    │  ═══════════════════════════════════════════════════════════   │
-    │  Total PETs: 1,234,567                                         │
-    │                                                                 │
-    │  Peak-to-Peak (P2P): 12,345 (1.0%)                             │
-    │    Both anchors overlap broad peaks                             │
-    │                                                                 │
-    │  Peak-to-Distal (P2D): 234,567 (19.0%)                         │
-    │    One anchor overlaps peak, other doesn't                      │
-    │                                                                 │
-    │  Distal-to-Distal (D2D): 987,655 (80.0%)                       │
-    │    Neither anchor overlaps peaks                                │
-    │  ═══════════════════════════════════════════════════════════   │
-    └─────────────────────────────────────────────────────────────────┘
     """
     logger.info("=" * 70)
     logger.info("PET CLASSIFICATION SUMMARY")
@@ -658,19 +456,17 @@ def summarize_classification(pets_df):
 def export_by_category(pets_df, output_prefix):
     """
     Export PETs split by category.
-    
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  Output Files:                                                  │
-    │  ├── {prefix}.all_pets.classified.txt   (all PETs + category)  │
-    │  ├── {prefix}.P2P_pets.txt              (Peak-to-Peak only)    │
-    │  ├── {prefix}.P2D_pets.txt              (Peak-to-Distal only)  │
-    │  ├── {prefix}.D2D_pets.txt              (Distal-to-Distal only)│
-    │  └── {prefix}.classification_summary.txt (statistics)          │
-    └─────────────────────────────────────────────────────────────────┘
+
+    Output files:
+      {prefix}.all_pets.classified.txt   (all PETs + category)
+      {prefix}.P2P_pets.txt              (Peak-to-Peak only)
+      {prefix}.P2D_pets.txt              (Peak-to-Distal only)
+      {prefix}.D2D_pets.txt              (Distal-to-Distal only)
+      {prefix}.classification_summary.txt (statistics)
     """
     logger.info("Exporting PETs by category...")
     
-    # Convert to Polars for fast multi-threaded write
+    # Convert to Polars for write
     pets_pl = pl.from_pandas(pets_df.reset_index(drop=True))
     
     # Export all PETs with category annotation
@@ -713,7 +509,7 @@ def export_by_category(pets_df, output_prefix):
     if hasattr(pets_df, 'peak_pair_data') and pets_df.peak_pair_data:
         peak_pair_file = f"{output_prefix}.peak_pair_counts.csv"
         
-        # Build Polars DataFrame and sort by PET_Count descending
+        # Sort by PET_Count descending
         peak_pair_pl = pl.DataFrame(
             pets_df.peak_pair_data,
             schema=['Peak1_Index', 'Peak1_ID', 'Peak2_Index', 'Peak2_ID', 'PET_Count', 'Type'],
@@ -734,19 +530,6 @@ def export_by_category(pets_df, output_prefix):
 def main():
     """
     Main entry point for PET classification.
-    
-    ╔═══════════════════════════════════════════════════════════════════╗
-    ║  USAGE                                                            ║
-    ╠═══════════════════════════════════════════════════════════════════╣
-    ║                                                                   ║
-    ║  python3 classify_pets.py <bedpe_file> <peak_file> <output_prefix>║
-    ║                                                                   ║
-    ║  Arguments:                                                       ║
-    ║    bedpe_file    : Input BEDPE file with PETs                    ║
-    ║    peak_file     : Broad peak file from MACS3 (.broadPeak)       ║
-    ║    output_prefix : Prefix for output files                        ║
-    ║                                                                   ║
-    ╚═══════════════════════════════════════════════════════════════════╝
     """
     import argparse
     
@@ -754,39 +537,23 @@ def main():
         description='Classify PETs from BEDPE file by broad peak overlap',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                         PET CLASSIFICATION CATEGORIES                         ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  P2P (Peak-to-Peak):     Both anchors overlap broad peaks                   ║
-║                          → Likely regulatory interactions                    ║
-║                                                                              ║
-║  P2D (Peak-to-Distal):   One anchor overlaps peak, other doesn't            ║
-║                          → Potential enhancer-promoter interactions          ║
-║                                                                              ║
-║  D2D (Distal-to-Distal): Neither anchor overlaps peaks                      ║
-║                          → Background or structural interactions             ║
-║                                                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                              EXAMPLE USAGE                                    ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  python3 classify_pets.py \\                                                 ║
-║      /path/to/mapped.dedup.bedpe \\                                          ║
-║      /path/to/broad_peaks.broadPeak \\                                       ║
-║      /path/to/output/classified_pets                                         ║
-║                                                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                              OUTPUT FILES                                     ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  {prefix}.all_pets.classified.txt    All PETs with category column          ║
-║  {prefix}.P2P_pets.txt               Peak-to-Peak PETs only                 ║
-║  {prefix}.P2D_pets.txt               Peak-to-Distal PETs only               ║
-║  {prefix}.D2D_pets.txt               Distal-to-Distal PETs only             ║
-║  {prefix}.classification_summary.txt Summary statistics                      ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+PET Classification Categories:
+  P2P (Peak-to-Peak):     Both anchors overlap broad peaks
+  P2D (Peak-to-Distal):   One anchor overlaps peak, other doesn't
+  D2D (Distal-to-Distal): Neither anchor overlaps peaks
+
+Example:
+  python3 classify_pets.py \\
+      /path/to/mapped.dedup.bedpe \\
+      /path/to/broad_peaks.broadPeak \\
+      /path/to/output/classified_pets
+
+Output files:
+  {prefix}.all_pets.classified.txt    All PETs with category column
+  {prefix}.P2P_pets.txt               Peak-to-Peak PETs only
+  {prefix}.P2D_pets.txt               Peak-to-Distal PETs only
+  {prefix}.D2D_pets.txt               Distal-to-Distal PETs only
+  {prefix}.classification_summary.txt Summary statistics
         """
     )
     
@@ -854,13 +621,3 @@ def main():
 if __name__ == '__main__':
     import sys
     sys.exit(main())
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# EXAMPLE COMMAND:
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# python3 classify_pets.py \
-#   /app/novel_algo_chiapet/data/updated_mapped.dedup.bedpe \
-#   /app/novel_algo_chiapet/trash/broad_peaks.broadPeak \
-#   /app/novel_algo_chiapet/trash/new_trash/classified_pets

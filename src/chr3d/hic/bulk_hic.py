@@ -1,26 +1,4 @@
-"""
-Hi-C Analysis Module
-
-This module implements modular Hi-C data processing with standalone classes for each step.
-Each class can be used independently or combined into a full pipeline.
-
-Classes:
-    - HiCAligner: BWA MEM alignment for Hi-C data
-    - HiCSamProcessor: SAM to BAM conversion and sorting
-    - HiCPairsProcessor: pairtools parse, sort, dedup, filter
-    - HiCMatrixGenerator: cooler contact matrix generation
-    - HiCPipeline: Complete pipeline orchestrator
-    - HiCQCAnalyzer: Quality control analysis
-    - FastqSplitter: Split large FASTQ files for parallel processing
-
-Dependencies:
-- BWA (>= 0.7.17)
-- SAMtools (>= 1.10)
-- pairtools (>= 1.0.0)
-- cooler (>= 0.9.0)
-
-Reference: 4DN Hi-C Processing Pipeline
-"""
+"""Hi-C Analysis Module - Modular Hi-C data processing pipeline."""
 
 import os
 import subprocess
@@ -81,32 +59,10 @@ def _format_duration(seconds: float) -> str:
 
 
 class FastqSplitter:
-    """
-    Split large FASTQ files into smaller chunks for parallel processing.
-    
-    Useful for processing very large Hi-C datasets by splitting into
-    manageable chunks that can be processed in parallel.
-    
-    Example:
-        >>> import chr3d as c3d
-        >>> 
-        >>> splitter = c3d.FastqSplitter(n_chunks=10)
-        >>> chunks = splitter.split(
-        ...     fastq1="sample_R1.fastq.gz",
-        ...     fastq2="sample_R2.fastq.gz",
-        ...     output_dir="split_fastq/"
-        ... )
-        >>> print(f"Created {len(chunks)} chunk pairs")
-    """
+    """Split large FASTQ files into smaller chunks for parallel processing."""
     
     def __init__(self, n_chunks: int = 10, reads_per_chunk: Optional[int] = None):
-        """
-        Initialize FASTQ splitter.
-        
-        Args:
-            n_chunks: Number of chunks to split into (default: 10)
-            reads_per_chunk: Reads per chunk (overrides n_chunks if set)
-        """
+        """Initialize FASTQ splitter."""
         self.n_chunks = n_chunks
         self.reads_per_chunk = reads_per_chunk
         
@@ -223,42 +179,17 @@ class FastqSplitter:
 
 
 class HiCAligner:
-    """
-    Hi-C alignment using BWA MEM with Hi-C specific parameters.
-    
-    Uses BWA MEM with -SP5M flags optimized for Hi-C chimeric reads.
-    
-    Example:
-        >>> import chr3d as c3d
-        >>> 
-        >>> aligner = c3d.HiCAligner(
-        ...     genome_index="/path/to/hg38.fa",
-        ...     threads=24
-        ... )
-        >>> stats = aligner.align(
-        ...     fastq1="sample_R1.fastq.gz",
-        ...     fastq2="sample_R2.fastq.gz",
-        ...     output_sam="aligned.sam"
-        ... )
-    """
+    """Hi-C alignment using BWA MEM with -SP5M flags."""
     
     def __init__(self,
                  genome_index: str,
                  threads: int = 1):
-        """
-        Initialize Hi-C aligner.
-        
-        Args:
-            genome_index: Path to BWA-indexed genome FASTA
-            threads: Number of threads for BWA (default: 1)
-        """
+        """Initialize Hi-C aligner."""
         self.genome_index = genome_index
         self.threads = threads
         
-        # Validate genome index
         self._validate_index()
         
-        # Check BWA is available
         if not _check_tool('bwa'):
             raise RuntimeError("BWA not found. Install with: conda install -c bioconda bwa")
         
@@ -329,29 +260,10 @@ class HiCAligner:
 
 
 class HiCSamProcessor:
-    """
-    SAM/BAM processing for Hi-C data using samtools.
-    
-    Converts SAM to BAM and sorts by read name (required for pairtools).
-    
-    Example:
-        >>> import chr3d as c3d
-        >>> 
-        >>> processor = c3d.HiCSamProcessor(threads=24)
-        >>> stats = processor.process(
-        ...     input_sam="aligned.sam",
-        ...     output_bam="sorted.bam"
-        ... )
-    """
+    """SAM/BAM processing using samtools - converts SAM to sorted BAM."""
     
     def __init__(self, threads: int = 1, min_mapq: int = 30):
-        """
-        Initialize SAM processor.
-        
-        Args:
-            threads: Number of threads for samtools (default: 1)
-            min_mapq: Minimum mapping quality score (default: 30)
-        """
+        """Initialize SAM processor."""
         self.threads = threads
         self.min_mapq = min_mapq
         
@@ -419,50 +331,14 @@ class HiCSamProcessor:
 
 
 class HiCPairsProcessor:
-    """
-    Hi-C pairs processing using pairtools.
-    
-    Provides methods for each pairtools step:
-    - parse: Convert BAM to pairs format
-    - sort: Sort pairs by genomic position
-    - dedup: Remove PCR duplicates
-    - filter: Filter valid pair types
-    
-    Example:
-        >>> import chr3d as c3d
-        >>> 
-        >>> pairs = c3d.HiCPairsProcessor(
-        ...     chrom_sizes="/path/to/hg38.chrom.sizes",
-        ...     assembly="hg38",
-        ...     threads=24
-        ... )
-        >>> 
-        >>> # Run individual steps
-        >>> pairs.parse(input_bam="sorted.bam", output_pairs="parsed.pairs.gz")
-        >>> pairs.sort(input_pairs="parsed.pairs.gz", output_pairs="sorted.pairs.gz")
-        >>> pairs.dedup(input_pairs="sorted.pairs.gz", output_pairs="dedup.pairs.gz")
-        >>> pairs.filter(input_pairs="dedup.pairs.gz", output_pairs="filtered.pairs.gz")
-        >>> 
-        >>> # Or run all steps at once
-        >>> stats = pairs.process_all(input_bam="sorted.bam", output_prefix="sample")
-    """
+    """Hi-C pairs processing using pairtools - parse, sort, dedup, filter."""
     
     def __init__(self,
                  chrom_sizes: str,
                  assembly: str = 'hg38',
                  threads: int = 1,
                  fragment_bed: Optional[str] = None):
-        """
-        Initialize pairs processor.
-        
-        Args:
-            chrom_sizes: Path to chromosome sizes file
-            assembly: Genome assembly name (default: 'hg38')
-            threads: Number of threads (default: 1)
-            fragment_bed: Path to restriction fragment BED file for fragment-aware
-                          pair parsing (enables walk rescue). If None, uses
-                          chrom_sizes for position-based parsing (default: None)
-        """
+        """Initialize pairs processor."""
         self.chrom_sizes = chrom_sizes
         self.assembly = assembly
         self.threads = threads
@@ -709,46 +585,13 @@ class HiCPairsProcessor:
 
 
 class HiCMatrixGenerator:
-    """
-    Contact matrix generation using cooler.
-    
-    Creates .cool and multi-resolution .mcool files from pairs.
-    
-    Example:
-        >>> import chr3d as c3d
-        >>> 
-        >>> matrix = c3d.HiCMatrixGenerator(
-        ...     chrom_sizes="/path/to/hg38.chrom.sizes",
-        ...     assembly="hg38",
-        ...     threads=24
-        ... )
-        >>> 
-        >>> # Create contact matrix
-        >>> stats = matrix.create(
-        ...     input_pairs="filtered.pairs.gz",
-        ...     output_cool="sample.cool"
-        ... )
-        >>> 
-        >>> # Create multi-resolution matrix
-        >>> matrix.zoomify(
-        ...     input_cool="sample.cool",
-        ...     output_mcool="sample.mcool",
-        ...     resolutions=[1000, 5000, 10000, 25000, 50000, 100000]
-        ... )
-    """
+    """Contact matrix generation using cooler - creates .cool and .mcool files."""
     
     def __init__(self,
                  chrom_sizes: str,
                  assembly: str = 'hg38',
                  threads: int = 1):
-        """
-        Initialize matrix generator.
-        
-        Args:
-            chrom_sizes: Path to chromosome sizes file
-            assembly: Genome assembly name (default: 'hg38')
-            threads: Number of threads (default: 1)
-        """
+        """Initialize matrix generator."""
         self.chrom_sizes = chrom_sizes
         self.assembly = assembly
         self.threads = threads
@@ -877,34 +720,7 @@ class HiCMatrixGenerator:
 
 
 class HiCPipeline:
-    """
-    Complete Hi-C data processing pipeline orchestrator.
-    
-    This class combines all Hi-C processing steps into a single pipeline.
-    For more control, use the individual step classes directly:
-    - HiCAligner: BWA MEM alignment
-    - HiCSamProcessor: SAM/BAM processing
-    - HiCPairsProcessor: pairtools processing
-    - HiCMatrixGenerator: cooler matrix generation
-    
-    Example:
-        >>> import chr3d as c3d
-        >>> 
-        >>> # Initialize pipeline
-        >>> hic = c3d.HiCPipeline(
-        ...     genome_index="/path/to/hg38.fa",
-        ...     chrom_sizes="/path/to/hg38.chrom.sizes",
-        ...     threads=24
-        ... )
-        >>> 
-        >>> # Run full pipeline
-        >>> stats = hic.run(
-        ...     fastq1="sample_R1.fastq.gz",
-        ...     fastq2="sample_R2.fastq.gz",
-        ...     output_dir="results/",
-        ...     sample_id="sample1"
-        ... )
-    """
+    """Complete Hi-C pipeline orchestrator combining all processing steps."""
     
     # Required external tools
     REQUIRED_TOOLS = ['bwa', 'samtools', 'pairtools', 'cooler']
@@ -925,29 +741,7 @@ class HiCPipeline:
                  call_compartments: bool = True,
                  compartment_phasing_track: Optional[str] = None,
                  fragment_bed: Optional[str] = None):
-        """
-        Initialize the Hi-C pipeline.
-        
-        Args:
-            genome_index: Path to BWA-indexed genome FASTA
-            chrom_sizes: Path to chromosome sizes file
-            threads: Number of threads for parallel processing (default: 1)
-            assembly: Genome assembly name (default: 'hg38')
-            min_mapq: Minimum mapping quality (default: 30)
-            min_distance: Minimum pair distance in bp (default: 1000)
-            resolutions: List of matrix resolutions in bp 
-                        (default: [1000, 5000, 10000, 25000, 50000, 100000])
-            n_splits: Split FASTQ into N chunks for parallel alignment; 0 = no splitting (default: 0)
-            call_tads: Run TAD/insulation calling after matrix generation (default: True)
-            tad_windows: Window sizes in bp for insulation scoring (default: library defaults)
-            call_loops: Run loop calling after matrix generation (default: True)
-            loop_fdr: FDR threshold for loop significance (default: 0.1)
-            call_compartments: Run A/B compartment calling (eigs_cis) after matrix generation (default: True)
-            compartment_phasing_track: Path to BED file (chrom,start,end,value) for phasing E1 sign,
-                                       e.g. gene density track (default: None — sign unoriented)
-            fragment_bed: Path to restriction fragment BED (from chr3d digest). Enables
-                          fragment-aware pairtools parse with walk rescue. (default: None)
-        """
+        """Initialize Hi-C pipeline."""
         self.genome_index = genome_index
         self.chrom_sizes = chrom_sizes
         self.threads = threads
@@ -964,7 +758,6 @@ class HiCPipeline:
         self.compartment_phasing_track = compartment_phasing_track
         self.fragment_bed = fragment_bed
         
-        # Validate inputs
         self._validate_inputs()
         self._check_dependencies()
         
@@ -985,16 +778,13 @@ class HiCPipeline:
     
     def _validate_inputs(self):
         """Validate input files exist."""
-        # Check genome index
         if os.path.isdir(self.genome_index):
-            # Find index files in directory
             amb_files = [f for f in os.listdir(self.genome_index) if f.endswith('.amb')]
             if not amb_files:
                 raise ValueError(f"No BWA index files found in: {self.genome_index}")
             base_name = amb_files[0][:-4]
             self.genome_index = os.path.join(self.genome_index, base_name)
         
-        # Check BWA index files exist (try both standard and .64 suffix)
         bwa_suffixes = ['.amb', '.ann', '.bwt', '.pac', '.sa']
         missing = []
         for s in bwa_suffixes:
@@ -1005,7 +795,6 @@ class HiCPipeline:
         if missing:
             raise ValueError(f"Missing BWA index files: {missing}")
         
-        # Check chrom sizes
         if not os.path.exists(self.chrom_sizes):
             raise ValueError(f"Chromosome sizes file not found: {self.chrom_sizes}")
     
@@ -1044,27 +833,13 @@ class HiCPipeline:
               fastq2: str,
               output_dir: str,
               sample_id: str) -> Dict[str, Any]:
-        """
-        Step 1: Run BWA MEM alignment for Hi-C data.
-        
-        Uses BWA MEM with Hi-C specific parameters (-SP5M).
-        
-        Args:
-            fastq1: Path to R1 FASTQ file
-            fastq2: Path to R2 FASTQ file
-            output_dir: Output directory
-            sample_id: Sample identifier
-            
-        Returns:
-            Dictionary with alignment statistics
-        """
+        """Run BWA MEM alignment for Hi-C data."""
         logger.info("=" * 70)
         logger.info("STEP 1: BWA MEM ALIGNMENT")
         logger.info("=" * 70)
         logger.info(f"FASTQ R1: {fastq1}")
         logger.info(f"FASTQ R2: {fastq2}")
         
-        # Create output directories
         aligned_dir = os.path.join(output_dir, 'aligned')
         qc_dir = os.path.join(output_dir, 'qc')
         os.makedirs(aligned_dir, exist_ok=True)
@@ -1073,19 +848,12 @@ class HiCPipeline:
         output_sam = os.path.join(aligned_dir, f"{sample_id}.sam")
         stats_file = os.path.join(qc_dir, f"{sample_id}_alignment.stats")
         
-        # BWA MEM with Hi-C specific parameters
-        # -S: Skip mate rescue
-        # -P: Skip pairing; mate rescue performed unless -S also in use
-        # -5: For split alignment, take the alignment with the smallest coordinate as primary
-        # -M: Mark shorter split hits as secondary
-        # Use absolute paths for output files
         output_sam_abs = os.path.abspath(output_sam)
         stats_file_abs = os.path.abspath(stats_file)
         cmd = f"bwa mem -SP5M -t {self.threads} {self.genome_index} {fastq1} {fastq2} > {output_sam_abs} 2> {stats_file_abs}"
         
         self._run_command(cmd, f"Aligning {sample_id}...")
         
-        # Get file size as basic stat
         sam_size = os.path.getsize(output_sam) if os.path.exists(output_sam) else 0
         
         logger.info(f"  Output SAM: {output_sam} ({sam_size / 1e9:.2f} GB)")
@@ -1100,19 +868,7 @@ class HiCPipeline:
                     input_sam: str,
                     output_dir: str,
                     sample_id: str) -> Dict[str, Any]:
-        """
-        Step 2: Process SAM to sorted BAM.
-        
-        Converts SAM to BAM and sorts by read name for pairtools.
-        
-        Args:
-            input_sam: Path to input SAM file
-            output_dir: Output directory
-            sample_id: Sample identifier
-            
-        Returns:
-            Dictionary with processing statistics
-        """
+        """Process SAM to sorted BAM."""
         logger.info("=" * 70)
         logger.info("STEP 2: SAM/BAM PROCESSING")
         logger.info("=" * 70)
@@ -1126,19 +882,15 @@ class HiCPipeline:
         sorted_bam = os.path.join(processed_dir, f"{sample_id}_sorted.bam")
         stats_file = os.path.join(qc_dir, f"{sample_id}_bam.stats")
         
-        # Convert SAM to BAM with MAPQ filtering
         cmd = f"samtools view -@ {self.threads} -q {self.min_mapq} -bS {input_sam} > {bam_file}"
         self._run_command(cmd, f"Converting SAM to BAM (MAPQ >= {self.min_mapq})...")
         
-        # Sort by read name (required for pairtools)
         cmd = f"samtools sort -@ {self.threads} -n -o {sorted_bam} {bam_file}"
         self._run_command(cmd, "Sorting BAM by read name...")
         
-        # Generate stats
         cmd = f"samtools stats -@ {self.threads} {sorted_bam} > {stats_file}"
         self._run_command(cmd, "Generating BAM statistics...")
         
-        # Clean up unsorted BAM
         if os.path.exists(bam_file):
             os.remove(bam_file)
         
@@ -1155,19 +907,7 @@ class HiCPipeline:
                       input_bam: str,
                       output_dir: str,
                       sample_id: str) -> Dict[str, Any]:
-        """
-        Step 3: Process Hi-C pairs using pairtools.
-        
-        Parses BAM to pairs format, sorts, deduplicates, and filters.
-        
-        Args:
-            input_bam: Path to sorted BAM file
-            output_dir: Output directory
-            sample_id: Sample identifier
-            
-        Returns:
-            Dictionary with pairs processing statistics
-        """
+        """Process Hi-C pairs using pairtools."""
         logger.info("=" * 70)
         logger.info("STEP 3: PAIRS PROCESSING")
         logger.info("=" * 70)
@@ -1244,8 +984,7 @@ class HiCPipeline:
                 {temp_pairs}"""
             self._run_command(cmd)
 
-            # Step 3b: annotate restriction fragments
-            logger.info("  Annotating restriction fragments (pairtools restrict)...")
+            logger.info("  Annotating restriction fragments...")
             cmd = f"""pairtools restrict \
                 --frags {self.fragment_bed} \
                 --nproc-in {self.threads} \
@@ -1254,13 +993,11 @@ class HiCPipeline:
                 {chrom_filtered_pairs}"""
             self._run_command(cmd)
 
-            # Drop the intermediate chrom-filtered file once restrict is done
             if os.path.exists(chrom_filtered_pairs):
                 os.remove(chrom_filtered_pairs)
 
             sort_input = restrict_pairs
 
-        # Sort pairs (use pairs_dir as temp directory to keep all temp files in output)
         logger.info("  Sorting pairs...")
         temp_sort_dir = os.path.join(pairs_dir, 'temp_sort')
         os.makedirs(temp_sort_dir, exist_ok=True)
@@ -1272,11 +1009,9 @@ class HiCPipeline:
             {sort_input}"""
         self._run_command(cmd)
         
-        # Clean up temp sort directory
         if os.path.exists(temp_sort_dir):
             shutil.rmtree(temp_sort_dir)
         
-        # Remove duplicates
         logger.info("  Removing duplicates...")
         cmd = f"""pairtools dedup \
             --nproc-in {self.threads} \
@@ -1287,13 +1022,11 @@ class HiCPipeline:
             {sorted_pairs}"""
         self._run_command(cmd)
         
-        # Filter valid pairs (UU, UR, RU)
         logger.info("  Filtering valid pairs...")
         cmd = f"""pairtools select '(pair_type == "UU") or (pair_type == "UR") or (pair_type == "RU")' \
             -o {filtered_pairs} {dedup_pairs}"""
         self._run_command(cmd)
         
-        # Clean up temp files
         for _f in (temp_pairs, restrict_pairs):
             if os.path.exists(_f):
                 os.remove(_f)
@@ -1314,19 +1047,7 @@ class HiCPipeline:
                               input_pairs: str,
                               output_dir: str,
                               sample_id: str) -> Dict[str, Any]:
-        """
-        Step 4: Create contact matrices using cooler.
-        
-        Generates .cool and multi-resolution .mcool files.
-        
-        Args:
-            input_pairs: Path to filtered pairs file
-            output_dir: Output directory
-            sample_id: Sample identifier
-            
-        Returns:
-            Dictionary with matrix statistics
-        """
+        """Create contact matrices using cooler."""
         logger.info("=" * 70)
         logger.info("STEP 4: CONTACT MATRIX GENERATION")
         logger.info("=" * 70)
@@ -1339,7 +1060,6 @@ class HiCPipeline:
         output_cool = os.path.join(matrices_dir, f"{sample_id}.cool")
         output_mcool = os.path.join(matrices_dir, f"{sample_id}.mcool")
         
-        # Create .cool file at 1kb resolution
         logger.info("  Creating contact matrix at 1kb resolution...")
         cmd = f"""cooler cload pairs \
             -c1 2 -p1 3 -c2 4 -p2 5 \
@@ -1349,7 +1069,6 @@ class HiCPipeline:
             {output_cool}"""
         self._run_command(cmd)
         
-        # Balance the matrix
         logger.info("  Balancing contact matrix...")
         cmd = f"""cooler balance --force \
             --max-iters 200 \
@@ -1361,13 +1080,11 @@ class HiCPipeline:
             {output_cool}"""
         self._run_command(cmd)
         
-        # Create multi-resolution .mcool
         logger.info(f"  Creating multi-resolution matrix ({self.resolutions})...")
         resolutions_str = ','.join(map(str, self.resolutions))
         cmd = f"cooler zoomify --balance -n {self.threads} --resolutions {resolutions_str} {output_cool} -o {output_mcool}"
         self._run_command(cmd)
         
-        # Generate matrix stats for each resolution
         for resolution in self.resolutions:
             stats_file = os.path.join(qc_dir, f"{sample_id}_matrix_{resolution}.stats")
             cmd = f"cooler info -o {stats_file} {output_mcool}::/resolutions/{resolution}"
@@ -1397,66 +1114,20 @@ class HiCPipeline:
             sample_id: str = 'sample',
             cleanup: bool = False,
             start_from: int = 1) -> Dict[str, Any]:
-        """
-        Run the complete Hi-C pipeline, or resume from a later step.
+        """Run the complete Hi-C pipeline or resume from a later step.
         
-        Executes all steps in order:
-        1. Alignment (BWA MEM)
-        2. SAM/BAM processing
-        3. Pairs processing (pairtools)
-        4. Contact matrix generation (cooler)
-        5. TAD calling (optional)
-        6. Loop calling (optional)
-        7. A/B compartment calling (optional)
+        Steps: 1. Alignment, 2. SAM/BAM, 3. Pairs, 4. Matrix, 5. TADs, 6. Loops, 7. Compartments
         
         Args:
-            fastq1: Path to R1 FASTQ file (required when start_from<=1)
-            fastq2: Path to R2 FASTQ file (required when start_from<=1)
+            fastq1: Path to R1 FASTQ (required for step 1)
+            fastq2: Path to R2 FASTQ (required for step 1)
             output_dir: Output directory
-            sample_id: Sample identifier (default: 'sample')
-            cleanup: Remove intermediate files (default: False)
-            start_from: Step to resume from (1-7). Default 1 runs the full pipeline.
-                When resuming, the expected inputs from prior steps must exist
-                at their canonical paths under ``output_dir``.
+            sample_id: Sample identifier
+            cleanup: Remove intermediate files
+            start_from: Step to resume from (1-7)
             
         Returns:
-            Dictionary with all pipeline statistics
-            
-        Output Directory Structure:
-            output_dir/
-            ├── aligned/                     # (empty after processing - SAM always deleted)
-            ├── processed/
-            │   └── {sample_id}_sorted.bam   # Sorted BAM (KEPT)
-            ├── pairs/
-            │   ├── {sample_id}.sorted.pairs.gz   # Sorted pairs (KEPT)
-            │   ├── {sample_id}.dedup.pairs.gz    # Deduplicated pairs (deleted if cleanup=True)
-            │   └── {sample_id}.filtered.pairs.gz # Filtered pairs (KEPT)
-            ├── matrices/
-            │   ├── {sample_id}.cool         # Contact matrix at 1kb (KEPT)
-            │   └── {sample_id}.mcool        # Multi-resolution matrix (KEPT)
-            └── qc/
-                ├── {sample_id}_system_config.txt  # System configuration
-                ├── {sample_id}_timing.txt         # Step timing summary
-                ├── {sample_id}_alignment.stats
-                ├── {sample_id}_bam.stats
-                ├── {sample_id}_pairs.stats
-                ├── {sample_id}_dedup.stats
-                └── {sample_id}_matrix_*.stats
-                
-        Files ALWAYS deleted (regardless of cleanup flag):
-            - aligned/{sample_id}.sam (large, BAM is kept and can convert back)
-            - pairs/{sample_id}.temp.pairs.gz (temporary)
-            
-        Files deleted only when cleanup=True:
-            - pairs/{sample_id}.dedup.pairs.gz
-            
-        Files always kept:
-            - processed/{sample_id}_sorted.bam (can convert to SAM: samtools view -h)
-            - pairs/{sample_id}.sorted.pairs.gz
-            - pairs/{sample_id}.filtered.pairs.gz
-            - matrices/{sample_id}.cool
-            - matrices/{sample_id}.mcool
-            - All QC stats files
+            Dictionary with pipeline statistics
         """
         pipeline_start_time = time.time()
 
@@ -1477,19 +1148,16 @@ class HiCPipeline:
         logger.info(f"Start from: step {start_from}")
         logger.info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Validate FASTQ files (only when running step 1)
         if start_from <= 1:
             if not os.path.exists(fastq1):
                 raise ValueError(f"FASTQ R1 not found: {fastq1}")
             if not os.path.exists(fastq2):
                 raise ValueError(f"FASTQ R2 not found: {fastq2}")
         
-        # Create output directory and QC directory
         os.makedirs(output_dir, exist_ok=True)
         qc_dir = os.path.join(output_dir, 'qc')
         os.makedirs(qc_dir, exist_ok=True)
         
-        # Save system configuration
         try:
             system_info_file = os.path.join(qc_dir, f'{sample_id}_system_config.txt')
             save_system_info(system_info_file)
@@ -1497,7 +1165,6 @@ class HiCPipeline:
         except Exception as e:
             logger.warning(f"Could not save system info: {e}")
         
-        # Initialize timing tracker
         timing = {}
         
         all_stats = {
@@ -1509,14 +1176,12 @@ class HiCPipeline:
             'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
         
-        # Canonical resume paths
         expected_sam   = os.path.join(output_dir, 'aligned',  f'{sample_id}.sam')
         expected_bam   = os.path.join(output_dir, 'processed', f'{sample_id}_sorted.bam')
         expected_pairs = os.path.join(output_dir, 'pairs',    f'{sample_id}.filtered.pairs.gz')
         expected_mcool = os.path.join(output_dir, 'matrices', f'{sample_id}.mcool')
         expected_cool  = os.path.join(output_dir, 'matrices', f'{sample_id}.cool')
 
-        # Step 1: Alignment
         if start_from <= 1:
             step1_start = time.time()
             align_stats = self.align(fastq1, fastq2, output_dir, sample_id)
@@ -1531,7 +1196,6 @@ class HiCPipeline:
             align_stats = {'output_sam': expected_sam, 'resumed': True}
             all_stats['alignment'] = align_stats
 
-        # Step 2: SAM/BAM processing
         if start_from <= 2:
             if not os.path.exists(align_stats['output_sam']):
                 raise FileNotFoundError(
@@ -1550,7 +1214,6 @@ class HiCPipeline:
             sam_stats = {'sorted_bam': expected_bam, 'resumed': True}
             all_stats['sam_processing'] = sam_stats
 
-        # Step 3: Pairs processing
         if start_from <= 3:
             if not os.path.exists(sam_stats['sorted_bam']):
                 raise FileNotFoundError(
@@ -1569,7 +1232,6 @@ class HiCPipeline:
             pairs_stats = {'filtered_pairs': expected_pairs, 'resumed': True}
             all_stats['pairs_processing'] = pairs_stats
 
-        # Step 4: Contact matrix
         if start_from <= 4:
             if not os.path.exists(pairs_stats['filtered_pairs']):
                 raise FileNotFoundError(
@@ -1594,7 +1256,6 @@ class HiCPipeline:
             }
             all_stats['contact_matrix'] = matrix_stats
 
-        # Step 5: TAD calling
         mcool_file = matrix_stats.get('mcool_file', '')
         tad_stats = {}
         if start_from <= 5 and self.call_tads and mcool_file and os.path.exists(mcool_file):
@@ -1624,7 +1285,6 @@ class HiCPipeline:
             logger.warning("  Step 5 (TAD calling) skipped — mcool not found")
         all_stats['tad_calling'] = tad_stats
 
-        # Step 6: Loop calling
         loop_stats = {}
         if start_from <= 6 and self.call_loops and mcool_file and os.path.exists(mcool_file):
             step6_start = time.time()
@@ -1653,7 +1313,6 @@ class HiCPipeline:
             logger.warning("  Step 6 (loop calling) skipped — mcool not found")
         all_stats['loop_calling'] = loop_stats
 
-        # Step 7: A/B Compartment calling
         compartment_stats = {}
         if start_from <= 7 and self.call_compartments and mcool_file and os.path.exists(mcool_file):
             step7_start = time.time()
@@ -1681,7 +1340,6 @@ class HiCPipeline:
             logger.warning("  Step 7 (compartment calling) skipped — mcool not found")
         all_stats['compartment_calling'] = compartment_stats
 
-        # Calculate total time
         total_duration = time.time() - pipeline_start_time
         timing['total'] = total_duration
         all_stats['timing'] = timing
@@ -1689,8 +1347,6 @@ class HiCPipeline:
         all_stats['total_duration_seconds'] = total_duration
         all_stats['total_duration_formatted'] = _format_duration(total_duration)
         
-        # Always delete SAM file (large, can be regenerated from BAM via samtools view)
-        # SAM is deleted regardless of cleanup flag since BAM is kept
         sam_file = os.path.join(output_dir, 'aligned', f'{sample_id}.sam')
         deleted_files = []
         if os.path.exists(sam_file):
@@ -1698,14 +1354,12 @@ class HiCPipeline:
             deleted_files.append(sam_file)
             logger.info(f"Removed SAM file (BAM is kept): {sam_file}")
         
-        # Additional cleanup if requested (removes dedup.pairs.gz)
         if cleanup:
             extra_deleted = self._cleanup(output_dir, sample_id)
             deleted_files.extend(extra_deleted)
         
         all_stats['deleted_files'] = deleted_files
         
-        # Document final output files
         tads_dir = os.path.join(output_dir, 'tads')
         loops_dir = os.path.join(output_dir, 'loops')
         final_outputs = {
@@ -1720,7 +1374,6 @@ class HiCPipeline:
         }
         all_stats['final_outputs'] = final_outputs
 
-        # Save timing summary to QC directory
         timing_file = os.path.join(qc_dir, f'{sample_id}_timing.txt')
         with open(timing_file, 'w') as f:
             f.write("=" * 70 + "\n")
@@ -1781,7 +1434,6 @@ class HiCPipeline:
         
         logger.info(f"\nNote: To convert BAM back to SAM, use: samtools view -h sorted.bam > output.sam")
         
-        # Generate detailed QC report
         try:
             from .utils.qc_report import generate_hic_qc_report
             qc_report_file = os.path.join(qc_dir, f'{sample_id}_quality_report.txt')
@@ -1794,7 +1446,6 @@ class HiCPipeline:
             logger.info(f"\n{'=' * 70}")
             logger.info("DETAILED QUALITY REPORT")
             logger.info(f"{'=' * 70}")
-            # Print the report to log
             for line in report.split('\n'):
                 logger.info(line)
             logger.info(f"\nQuality report saved to: {qc_report_file}")
@@ -1805,35 +1456,10 @@ class HiCPipeline:
         return all_stats
     
     def _cleanup(self, output_dir: str, sample_id: str) -> List[str]:
-        """
-        Remove additional intermediate files to save disk space.
-        
-        Note: SAM files are ALWAYS deleted (handled in run() method) since
-        BAM is kept and can be converted back to SAM via: samtools view -h file.bam > file.sam
-        
-        Files deleted by this method (only when cleanup=True):
-            - pairs/{sample_id}.dedup.pairs.gz (intermediate, redundant with filtered)
-            
-        Files always kept:
-            - processed/{sample_id}_sorted.bam (useful for reprocessing, can convert to SAM)
-            - pairs/{sample_id}.sorted.pairs.gz (useful for reprocessing)
-            - pairs/{sample_id}.filtered.pairs.gz (final filtered pairs)
-            - matrices/{sample_id}.cool (contact matrix)
-            - matrices/{sample_id}.mcool (multi-resolution matrix)
-            - All QC stats files
-            
-        Args:
-            output_dir: Output directory
-            sample_id: Sample identifier
-            
-        Returns:
-            List of deleted file paths
-        """
+        """Remove intermediate files when cleanup=True."""
         logger.info("Cleaning up additional intermediate files...")
         deleted_files = []
         
-        # Remove dedup pairs (keep sorted pairs for potential reprocessing)
-        # Note: sorted.pairs.gz and filtered.pairs.gz are kept
         pairs_dir = os.path.join(output_dir, 'pairs')
         dedup_file = os.path.join(pairs_dir, f'{sample_id}.dedup.pairs.gz')
         if os.path.exists(dedup_file):
@@ -1848,17 +1474,7 @@ class HiCPipeline:
 
 
 class HiCQCAnalyzer:
-    """
-    Quality control analyzer for Hi-C data.
-    
-    Parses and summarizes QC metrics from Hi-C pipeline outputs.
-    
-    Example:
-        >>> import chr3d as c3d
-        >>> 
-        >>> qc = c3d.HiCQCAnalyzer()
-        >>> stats = qc.analyze(qc_dir="results/qc", output_dir="results/summary")
-    """
+    """Quality control analyzer for Hi-C pipeline outputs."""
     
     def __init__(self):
         """Initialize QC analyzer."""

@@ -1,24 +1,4 @@
-"""
-loops_to_beddb.py
-Fast converter: significant-loops CSV + narrowPeak -> BEDPE -> bedpedb (HiGlass).
-Pipeline:
-    [CSV + narrowPeak]  --polars+threads-->  BEDPE
-    [BEDPE]             --clodius-->         bedpedb (SQLite)
-The bedpedb file is loaded in HiGlass as a 1d-arcs track (via the
-clodius.tiles.bed2ddb.tiles loader). The same file can be served from a
-local higlass-python tileset.
-Speedups vs the pandas version:
-  - Polars lazy joins + multi-threaded I/O (10-30x faster CSV read)
-  - Vectorised log10/clip with numpy
-  - Single pass for filter + join + score + reorder
-  - Optional ProcessPoolExecutor for the clodius aggregate step
-Position-correctness checks (run automatically):
-  1. Every Peak1_ID / Peak2_ID resolves to a known peak -> chrom/start/end.
-  2. CSV `Chrom1` / `Chrom2` matches the chrom of the joined peak.
-  3. After ordering, start1 <= start2 on intra-chromosomal pairs.
-  4. Re-open the produced bedpedb with sqlite3 and verify a sample of
-     entries lands at the same global coordinates as the BEDPE file.
-"""
+"""Fast converter: significant-loops CSV + broadPeak -> BEDPE -> bedpedb (HiGlass)."""
 from __future__ import annotations
 
 import argparse
@@ -34,18 +14,15 @@ import numpy as np
 import polars as pl
 
 
-# ---------------------------------------------------------------------------
-# Step 1: CSV + narrowPeak -> BEDPE (polars, multi-threaded)
-# ---------------------------------------------------------------------------
-def load_peaks(narrow_peak_path: str) -> pl.DataFrame:
-    """Load a narrowPeak as polars DataFrame indexed by name (col 4)."""
+def load_peaks(peak_path: str) -> pl.DataFrame:
+    """Load a broadPeak as polars DataFrame indexed by name (col 4)."""
     return pl.read_csv(
-        narrow_peak_path,
+        peak_path,
         separator="\t",
         has_header=False,
         new_columns=[
             "chrom", "start", "end", "name", "score", "strand",
-            "signalValue", "pValue", "qValue", "peak",
+            "signalValue", "pValue", "qValue",
         ],
         schema_overrides={
             "chrom": pl.Utf8, "start": pl.Int64, "end": pl.Int64,
@@ -63,9 +40,7 @@ def csv_to_bedpe(
     canonical_chroms_only: bool = True,
     max_score: float = 300.0,
 ) -> Tuple[pl.DataFrame, dict]:
-    """Convert loops CSV -> BEDPE with importance score = -log10(p_value).
-    Returns (final_dataframe, stats_dict). Writes BEDPE to disk.
-    """
+    """Convert loops CSV -> BEDPE with importance score = -log10(p_value)."""
     stats: dict = {}
     t0 = time.time()
 
@@ -116,16 +91,12 @@ def csv_to_bedpe(
                        "end": "p2_end", "name": "Peak2_ID"})
     df = loops.join(p1, on="Peak1_ID", how="left") \
               .join(p2, on="Peak2_ID", how="left")
-
-    # Drop rows where either peak ID was missing
     before = df.height
     df = df.drop_nulls(["p1_chrom", "p2_chrom"])
     if df.height < before:
         print(f"      WARNING: dropped {before-df.height:,} unknown peak IDs",
               file=sys.stderr)
     stats["n_after_join"] = df.height
-
-    # Sanity: CSV chrom must match peak chrom
     mismatch = df.filter(
         (pl.col("p1_chrom") != pl.col("Chrom1")) |
         (pl.col("p2_chrom") != pl.col("Chrom2"))
@@ -133,7 +104,7 @@ def csv_to_bedpe(
     stats["n_chrom_mismatch"] = mismatch.height
     if mismatch.height:
         print(f"      WARNING: {mismatch.height:,} chrom mismatches "
-              "(CSV vs narrowPeak); these are dropped", file=sys.stderr)
+              "(CSV vs broadPeak); these are dropped", file=sys.stderr)
         df = df.filter(
             (pl.col("p1_chrom") == pl.col("Chrom1")) &
             (pl.col("p2_chrom") == pl.col("Chrom2"))
@@ -147,8 +118,6 @@ def csv_to_bedpe(
     p_vec = df[p_value_col].to_numpy()
     p_safe = np.clip(p_vec, eps, None)
     score = np.clip(-np.log10(p_safe), 0, max_score).round(4)
-
-    # Order pairs so start1 <= start2 on intra-chrom pairs
     chrom1 = df["p1_chrom"].to_numpy()
     chrom2 = df["p2_chrom"].to_numpy()
     s1 = df["p1_start"].to_numpy().copy()
@@ -161,9 +130,8 @@ def csv_to_bedpe(
     swap = (chrom1 == chrom2) & (s1 > s2)
     s1[swap], s2[swap] = s2[swap], s1[swap]
     e1[swap], e2[swap] = e2[swap], e1[swap]
-    pid1c = pid1.copy(); pid2c = pid2.copy()
-    pid1c[swap] = pid2[swap]
-    pid2c[swap] = pid1[swap]
+    pid1c, pid2c = pid1.copy(), pid2.copy()
+    pid1c[swap], pid2c[swap] = pid2[swap], pid1[swap]
     stats["n_swapped"] = int(swap.sum())
 
     out = pl.DataFrame({
@@ -189,19 +157,16 @@ def csv_to_bedpe(
     return out, stats
 
 
-# ---------------------------------------------------------------------------
-# Step 2: BEDPE -> bedpedb (clodius aggregate)
-# ---------------------------------------------------------------------------
 def bedpe_to_bedpedb(
     bedpe_path: str,
     output_bedpedb: str,
     assembly: str = "hg38",
-    importance_col: int = 8,   # 1-based: column 8 = score
+    importance_col: int = 8,
     max_per_tile: int = 100,
     tile_size: int = 1024,
 ) -> str:
     """Run `clodius aggregate bedpe` to produce a SQLite bedpedb file."""
-    print(f"\n[5/4] clodius aggregate bedpe -> {output_bedpedb}", flush=True)
+    print(f"[5/4] clodius aggregate bedpe -> {output_bedpedb}", flush=True)
     if os.path.exists(output_bedpedb):
         os.remove(output_bedpedb)
     cmd = [
@@ -227,9 +192,13 @@ def bedpe_to_bedpedb(
     return output_bedpedb
 
 
-# ---------------------------------------------------------------------------
-# Step 3: Position verification
-# ---------------------------------------------------------------------------
+def _bedpe_to_tsv_for_verify(bedpe_df: pl.DataFrame) -> str:
+    """Convert BEDPE to TSV for verification."""
+    tsv_path = "bedpe_for_verify.tsv"
+    bedpe_df.write_csv(tsv_path, separator="\t", include_header=False)
+    return tsv_path
+
+
 def verify_positions(
     bedpe_df: pl.DataFrame,
     bedpedb_path: str,
@@ -243,7 +212,8 @@ def verify_positions(
     print(f"\n[VERIFY] checking {n_samples} random entries against bedpedb",
           flush=True)
 
-    # Build chrom -> cumulative offset map (same order as chromsizes file)
+    tsv_path = _bedpe_to_tsv_for_verify(bedpe_df)
+    expected = []
     cum = {}
     total = 0
     with open(chromsizes_path) as fh:
@@ -253,9 +223,7 @@ def verify_positions(
                 cum[parts[0]] = total
                 total += int(parts[1])
 
-    # Pick top-N highest-score rows for the check
     sample = bedpe_df.sort("score", descending=True).head(n_samples)
-    expected = []
     for r in sample.iter_rows(named=True):
         if r["chrom1"] not in cum or r["chrom2"] not in cum:
             continue
@@ -264,7 +232,6 @@ def verify_positions(
         expected.append((gx, gy, r["chrom1"], r["start1"],
                          r["chrom2"], r["start2"]))
 
-    # Open bedpedb and pull the rows with the highest importance
     conn = sqlite3.connect(bedpedb_path)
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -303,9 +270,67 @@ def verify_positions(
     return ok == len(expected)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+def convert_loops_to_bedpedb(
+    loops_csv: str,
+    peaks_broadpeak: str,
+    output_bedpedb: str,
+    assembly: str = "hg38",
+    chromsizes: str = "",
+    p_value_col: str = "p_adj_fdr_bh",
+    significant_col: str = "significant_fdr_bh",
+    verify: bool = True,
+) -> dict:
+    """Convert significant loops CSV + broadPeak -> BEDPE -> bedpedb (HiGlass).
+
+    Convenience wrapper that chains csv_to_bedpe + bedpe_to_bedpedb + optional
+    verification, and cleans up the intermediate BEDPE file.
+
+    Args:
+        loops_csv: Path to the significant loops CSV from background model.
+        peaks_broadpeak: Path to the MACS3 broadPeak file.
+        output_bedpedb: Path for the output bedpedb file.
+        assembly: Genome assembly for clodius (default: "hg38").
+        chromsizes: Path to chrom.sizes file for verification.
+        p_value_col: Column name for p-values in the loops CSV.
+        significant_col: Column name for significance flag in the loops CSV.
+        verify: Whether to verify coordinates against the bedpedb (default: True).
+
+    Returns:
+        Dictionary with conversion statistics.
+    """
+    bedpe_path = output_bedpedb.replace(".bedpedb", ".bedpe")
+    if bedpe_path == output_bedpedb:
+        bedpe_path = output_bedpedb + ".bedpe"
+
+    print(f"[1/2] Converting loops to BEDPE using {peaks_broadpeak}...")
+    bedpe_df, stats = csv_to_bedpe(
+        loops_csv=loops_csv,
+        peaks_path=peaks_broadpeak,
+        output_bedpe=bedpe_path,
+        p_value_col=p_value_col,
+        significant_col=significant_col,
+    )
+
+    print(f"[2/2] Aggregating to bedpedb -> {output_bedpedb}...")
+    bedpe_to_bedpedb(
+        bedpe_path=bedpe_path,
+        output_bedpedb=output_bedpedb,
+        assembly=assembly,
+    )
+
+    if verify and chromsizes and os.path.exists(chromsizes):
+        print("[VERIFY] Checking coordinates...")
+        ok = verify_positions(bedpe_df, output_bedpedb, chromsizes)
+        if not ok:
+            raise RuntimeError("bedpedb verification failed")
+
+    if os.path.exists(bedpe_path):
+        os.remove(bedpe_path)
+
+    print(f"\nDone -> {output_bedpedb}")
+    return stats
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--loops_csv", required=True)

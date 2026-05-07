@@ -1,5 +1,5 @@
 """
-Chr3D: Hi-C Chromatin Interaction Analysis Framework
+Chr3D: Chromatin Interaction Analysis Framework
 
 Modules:
     Bulk Hi-C:
@@ -17,8 +17,8 @@ Modules:
     - RestrictionSiteGenerator: Generate restriction fragment sites
 """
 
-__version__ = "3.2.0"
-__author__ = "Chr3D Development Team"
+__version__ = "1.0.0"
+__author__ = "Rudhra Joshi"
 
 # ============================================================================
 # Hi-C Modules

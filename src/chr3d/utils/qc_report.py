@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-Hi-C Pipeline Quality Report Generator
-
-Generates beautiful ASCII UI quality reports from Hi-C pipeline statistics files.
-Parses samtools stats, pairtools stats, and dedup stats to create comprehensive reports.
-"""
+"""Hi-C Pipeline Quality Report Generator."""
 
 import os
 import re
@@ -32,7 +27,7 @@ def calc_percent(value: float, total: float) -> float:
 
 def create_progress_bar(percentage: float, width: int = 40, fill: str = '█', empty: str = '░') -> str:
     """Create a progress bar."""
-    percentage = min(100, max(0, percentage))  # Clamp to 0-100
+    percentage = min(100, max(0, percentage))
     filled = int(width * percentage / 100)
     bar = fill * filled + empty * (width - filled)
     return f"[{bar}] {percentage:.1f}%"
@@ -51,15 +46,7 @@ def format_stat_line(label: str, value: str, percentage: Optional[float] = None,
 
 
 def parse_samtools_stats(stats_file: str) -> Dict[str, Any]:
-    """
-    Parse samtools stats output file.
-    
-    Args:
-        stats_file: Path to samtools stats output file
-        
-    Returns:
-        Dictionary with parsed statistics
-    """
+    """Parse samtools stats output file."""
     stats = {}
     
     if not os.path.exists(stats_file):
@@ -72,7 +59,6 @@ def parse_samtools_stats(stats_file: str) -> Dict[str, Any]:
                 if len(parts) >= 3:
                     key = parts[1].rstrip(':')
                     value = parts[2]
-                    # Try to convert to number
                     try:
                         if '.' in value or 'e' in value.lower():
                             stats[key] = float(value)
@@ -85,15 +71,7 @@ def parse_samtools_stats(stats_file: str) -> Dict[str, Any]:
 
 
 def parse_pairtools_stats(stats_file: str) -> Dict[str, Any]:
-    """
-    Parse pairtools stats output file.
-    
-    Args:
-        stats_file: Path to pairtools stats output file
-        
-    Returns:
-        Dictionary with parsed statistics
-    """
+    """Parse pairtools stats output file."""
     stats = {}
     
     if not os.path.exists(stats_file):
@@ -109,7 +87,6 @@ def parse_pairtools_stats(stats_file: str) -> Dict[str, Any]:
             if len(parts) >= 2:
                 key = parts[0]
                 value = parts[1]
-                # Try to convert to number
                 try:
                     if '.' in value or 'e' in value.lower():
                         stats[key] = float(value)
@@ -127,21 +104,8 @@ def generate_hic_qc_report(
     output_file: Optional[str] = None,
     timing_info: Optional[Dict[str, Any]] = None
 ) -> str:
-    """
-    Generate a comprehensive Hi-C QC report.
-    
-    Args:
-        qc_dir: Path to QC directory containing stats files
-        sample_id: Sample identifier
-        output_file: Optional path to save the report
-        timing_info: Optional timing information dictionary
-        
-    Returns:
-        Formatted report string
-    """
+    """Generate a comprehensive Hi-C QC report."""
     qc_dir = Path(qc_dir)
-    
-    # Parse all stats files
     bam_stats_file = qc_dir / f"{sample_id}_bam.stats"
     pairs_stats_file = qc_dir / f"{sample_id}_pairs.stats"
     dedup_stats_file = qc_dir / f"{sample_id}_dedup.stats"
@@ -149,11 +113,7 @@ def generate_hic_qc_report(
     bam_stats = parse_samtools_stats(str(bam_stats_file))
     pairs_stats = parse_pairtools_stats(str(pairs_stats_file))
     dedup_stats = parse_pairtools_stats(str(dedup_stats_file))
-    
-    # Build report
     lines = []
-    
-    # Header
     lines.append("=" * 80)
     lines.append("║" + " " * 78 + "║")
     title = "HI-C PIPELINE QUALITY REPORT"
@@ -161,8 +121,6 @@ def generate_hic_qc_report(
     lines.append("║" + " " * padding + title + " " * (78 - padding - len(title)) + "║")
     lines.append("║" + " " * 78 + "║")
     lines.append("=" * 80)
-    
-    # Sample info
     lines.append("")
     lines.append(f"📊 Sample: {sample_id}")
     
@@ -173,9 +131,6 @@ def generate_hic_qc_report(
         if 'total_duration_formatted' in timing_info:
             lines.append(f"⏱️  Duration: {timing_info['total_duration_formatted']}")
     
-    # =========================================================================
-    # ALIGNMENT STATISTICS
-    # =========================================================================
     if bam_stats:
         lines.append("")
         lines.append("=" * 80)
@@ -194,8 +149,6 @@ def generate_hic_qc_report(
         outward_pairs = bam_stats.get('outward oriented pairs', 0)
         other_orientation = bam_stats.get('pairs with other orientation', 0)
         diff_chromosomes = bam_stats.get('pairs on different chromosomes', 0)
-        
-        # Read Mapping Overview
         lines.append("")
         lines.append("📈 Read Mapping Overview")
         lines.append("-" * 80)
@@ -207,8 +160,6 @@ def generate_hic_qc_report(
                                       calc_percent(reads_unmapped, total_sequences), bar=True))
         lines.append(format_stat_line("Mapping Quality = 0", format_number(reads_mq0),
                                       calc_percent(reads_mq0, reads_mapped), bar=True))
-        
-        # Quality Metrics
         lines.append("")
         lines.append("🎯 Quality Metrics")
         lines.append("-" * 80)
@@ -216,8 +167,6 @@ def generate_hic_qc_report(
         lines.append(format_stat_line("Error Rate", f"{error_rate*100:.2f}%"))
         lines.append(format_stat_line("Average Insert Size", f"{insert_size_avg:.1f} bp"))
         lines.append(format_stat_line("Insert Size Std Dev", f"{insert_size_std:.1f} bp"))
-        
-        # Pair Orientation
         lines.append("")
         lines.append("🔄 Pair Orientation")
         lines.append("-" * 80)
@@ -231,12 +180,7 @@ def generate_hic_qc_report(
                                           calc_percent(other_orientation, total_oriented), bar=True, bar_width=35))
         lines.append(format_stat_line("Different Chromosomes", format_number(diff_chromosomes)))
     
-    # =========================================================================
-    # PAIRS STATISTICS
-    # =========================================================================
-    # Use dedup_stats if available, otherwise pairs_stats
     pair_data = dedup_stats if dedup_stats else pairs_stats
-    
     if pair_data:
         lines.append("")
         lines.append("=" * 80)
@@ -252,7 +196,6 @@ def generate_hic_qc_report(
         cis_contacts = pair_data.get('cis', 0)
         trans_contacts = pair_data.get('trans', 0)
         
-        # Distance stats
         cis_1kb = pair_data.get('cis_1kb+', 0)
         cis_2kb = pair_data.get('cis_2kb+', 0)
         cis_4kb = pair_data.get('cis_4kb+', 0)
@@ -261,9 +204,7 @@ def generate_hic_qc_report(
         cis_40kb = pair_data.get('cis_40kb+', 0)
         
         frac_cis = pair_data.get('summary/frac_cis', 0)
-        frac_dups = pair_data.get('summary/frac_dups', 0)
-        
-        # Pair Processing
+        cis_short = pair_data.get('cis_1kb', 0)
         lines.append("")
         lines.append("📊 Pair Processing")
         lines.append("-" * 80)
@@ -273,18 +214,15 @@ def generate_hic_qc_report(
         lines.append(format_stat_line("Unmapped Pairs", format_number(unmapped_pairs),
                                       calc_percent(unmapped_pairs, total_pairs), bar=True))
         lines.append(format_stat_line("Single-Sided Mapped", format_number(single_sided),
-                                      calc_percent(single_sided, total_pairs), bar=True))
-        
-        # Duplicate Analysis
-        lines.append("")
-        lines.append("🔍 Duplicate Analysis")
-        lines.append("-" * 80)
-        lines.append(format_stat_line("Total Duplicates", format_number(total_dups),
-                                      calc_percent(total_dups, mapped_pairs), bar=True))
-        lines.append(format_stat_line("Non-Duplicates", format_number(total_nodups),
-                                      calc_percent(total_nodups, mapped_pairs), bar=True))
-        
-        # Interaction Type
+                                      calc_percent(total_nodups, total_pairs), bar=True))
+        if 'summary/frac_dups' in pair_data:
+            lines.append("🔍 Duplicate Analysis")
+            lines.append("-" * 80)
+            lines.append(format_stat_line("Total Duplicates", format_number(total_dups),
+                                          calc_percent(total_dups, mapped_pairs), bar=True))
+            lines.append(format_stat_line("Non-Duplicates", format_number(total_nodups),
+                                          calc_percent(total_nodups, mapped_pairs), bar=True))
+            lines.append(format_stat_line("Unique Pairs", format_number(total_nodups), 100 - pair_data['summary/frac_dups'], bar=True))
         lines.append("")
         lines.append("🧬 Interaction Type")
         lines.append("-" * 80)
@@ -297,8 +235,6 @@ def generate_hic_qc_report(
             cis_trans_ratio = cis_contacts / trans_contacts
             lines.append("")
             lines.append(f"{'Cis/Trans Ratio:':<35} {cis_trans_ratio:.2f}:1")
-        
-        # Distance Distribution
         lines.append("")
         lines.append("📏 Distance Distribution (Cis Contacts)")
         lines.append("-" * 80)
@@ -316,9 +252,6 @@ def generate_hic_qc_report(
             lines.append(format_stat_line("≥ 40 KB", format_number(cis_40kb),
                                           calc_percent(cis_40kb, total_nodups), bar=True, bar_width=35))
     
-    # =========================================================================
-    # TIMING SUMMARY (if available)
-    # =========================================================================
     if timing_info and 'timing' in timing_info:
         lines.append("")
         lines.append("=" * 80)
@@ -347,15 +280,10 @@ def generate_hic_qc_report(
         if 'total' in timing:
             lines.append(format_stat_line("TOTAL", _format_duration(timing['total'])))
     
-    # =========================================================================
-    # QUALITY ASSESSMENT
-    # =========================================================================
     lines.append("")
     lines.append("=" * 80)
     lines.append("=" + " " * 27 + "QUALITY ASSESSMENT" + " " * 27 + "=")
     lines.append("=" * 80)
-    
-    # Calculate quality indicators
     mapping_rate = calc_percent(bam_stats.get('reads mapped', 0), 
                                 bam_stats.get('raw total sequences', 1)) if bam_stats else 0
     frac_dups = pair_data.get('summary/frac_dups', 0) if pair_data else 0
@@ -371,8 +299,6 @@ def generate_hic_qc_report(
     lines.append(f"{'Mapping Rate:':<35} {mapping_quality:<20} ({mapping_rate:.1f}%)")
     lines.append(f"{'Duplication Rate:':<35} {dup_quality:<20} ({frac_dups*100:.1f}%)")
     lines.append(f"{'Cis Contact Fraction:':<35} {cis_quality:<20} ({frac_cis*100:.1f}%)")
-    
-    # Overall assessment
     overall_score = 0
     if mapping_rate > 90:
         overall_score += 1
@@ -390,15 +316,11 @@ def generate_hic_qc_report(
     else:
         lines.append("║" + " " * 18 + "⚠️  OVERALL QUALITY: NEEDS REVIEW ⚠️" + " " * 20 + "║")
     lines.append("=" * 80)
-    
-    # Footer
     lines.append("")
     lines.append(f"📝 Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("=" * 80)
     
     report = '\n'.join(lines)
-    
-    # Save to file if requested
     if output_file:
         output_path = Path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
