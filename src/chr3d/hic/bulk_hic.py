@@ -262,7 +262,7 @@ class HiCAligner:
 class HiCSamProcessor:
     """SAM/BAM processing using samtools - converts SAM to sorted BAM."""
     
-    def __init__(self, threads: int = 1, min_mapq: int = 30):
+    def __init__(self, threads: int = 1, min_mapq: int = 0):
         """Initialize SAM processor."""
         self.threads = threads
         self.min_mapq = min_mapq
@@ -272,7 +272,7 @@ class HiCSamProcessor:
         
         logger.info("HiCSamProcessor initialized")
         logger.info(f"  Threads: {threads}")
-        logger.info(f"  Min MAPQ: {min_mapq}")
+        logger.info(f"  Min MAPQ: {min_mapq or 'none (deferred to pairtools)'}")
     
     def process(self,
                 input_sam: str,
@@ -302,9 +302,10 @@ class HiCSamProcessor:
         # Temp unsorted BAM
         unsorted_bam = output_bam.replace('.bam', '.unsorted.bam')
         
-        # Convert SAM to BAM with MAPQ filtering
-        cmd = f"samtools view -@ {self.threads} -q {self.min_mapq} -bS {input_sam} > {unsorted_bam}"
-        _run_command(cmd, f"Converting SAM to BAM (MAPQ >= {self.min_mapq})...")
+        # Convert SAM to BAM (MAPQ filtering deferred to pairtools parse --min-mapq)
+        mapq_opt = f"-q {self.min_mapq}" if self.min_mapq > 0 else ""
+        cmd = f"samtools view -@ {self.threads} {mapq_opt} -bS {input_sam} > {unsorted_bam}"
+        _run_command(cmd, "Converting SAM to BAM...")
         
         # Sort by read name (required for pairtools)
         cmd = f"samtools sort -@ {self.threads} -n -o {output_bam} {unsorted_bam}"
@@ -337,12 +338,14 @@ class HiCPairsProcessor:
                  chrom_sizes: str,
                  assembly: str = 'hg38',
                  threads: int = 1,
-                 fragment_bed: Optional[str] = None):
+                 fragment_bed: Optional[str] = None,
+                 min_mapq: int = 30):
         """Initialize pairs processor."""
         self.chrom_sizes = chrom_sizes
         self.assembly = assembly
         self.threads = threads
         self.fragment_bed = fragment_bed
+        self.min_mapq = min_mapq
         
         if not os.path.exists(chrom_sizes):
             raise ValueError(f"Chromosome sizes file not found: {chrom_sizes}")
@@ -354,7 +357,8 @@ class HiCPairsProcessor:
         logger.info(f"  Chromosome sizes: {chrom_sizes}")
         logger.info(f"  Assembly: {assembly}")
         logger.info(f"  Threads: {threads}")
-        logger.info(f"  Fragment BED: {fragment_bed or 'none (position-based)'}") 
+        logger.info(f"  Fragment BED: {fragment_bed or 'none (position-based)'}")
+        logger.info(f"  Min MAPQ: {min_mapq}")
     
     def parse(self,
               input_bam: str,
@@ -382,9 +386,12 @@ class HiCPairsProcessor:
         # Fragment-aware annotation is done via `pairtools restrict` (see
         # HiCPairsProcessor.restrict / the pipeline process_pairs step).
         walks_opt = "--walks-policy all --max-inter-align-gap 20" if self.fragment_bed else ""
+        mapq_opt = f"--min-mapq {self.min_mapq}" if self.min_mapq > 0 else ""
         cmd = f"""pairtools parse \
             --assembly {self.assembly} \
             --chroms-path {self.chrom_sizes} \
+            --add-columns mapq \
+            {mapq_opt} \
             --nproc-in {self.threads} \
             --nproc-out {self.threads} \
             --output {output_pairs} \
@@ -494,17 +501,55 @@ class HiCPairsProcessor:
         
         return {'output_pairs': output_pairs, 'stats_file': stats_file}
     
+    def select_chroms(self,
+                      input_pairs: str,
+                      output_pairs: str) -> Dict[str, Any]:
+        """
+        Keep only pairs on standard chromosomes.
+        
+        Non-standard contigs (e.g. HLA-DRB1*12:01:01, decoy contigs) cause
+        ``pairtools restrict`` to crash because they are absent from the
+        fragment BED.  This step removes them before restrict.
+        
+        Args:
+            input_pairs: Path to input pairs file
+            output_pairs: Path to output cleaned pairs file
+            
+        Returns:
+            Dictionary with output path
+        """
+        logger.info("PAIRTOOLS SELECT (STANDARD CHROMS)")
+        logger.info(f"  Input: {input_pairs}")
+        logger.info(f"  Output: {output_pairs}")
+        
+        os.makedirs(os.path.dirname(output_pairs) or '.', exist_ok=True)
+        
+        # Keep pairs where both chroms are standard (chr1-22, chrX, chrY, chrM)
+        # or unmapped marker "!"
+        cmd = f"""pairtools select \
+            '(chrom1 == "!" or (chrom1.startswith("chr") and len(chrom1) <= 5 and chrom1[3:].isdigit() or chrom1 in ["chrX","chrY","chrM"])) and (chrom2 == "!" or (chrom2.startswith("chr") and len(chrom2) <= 5 and chrom2[3:].isdigit() or chrom2 in ["chrX","chrY","chrM"]))' \
+            -o {output_pairs} {input_pairs}"""
+        
+        _run_command(cmd)
+        
+        pairs_size = os.path.getsize(output_pairs) if os.path.exists(output_pairs) else 0
+        logger.info(f"  Output: {output_pairs} ({pairs_size / 1e6:.2f} MB)")
+        
+        return {'output_pairs': output_pairs, 'pairs_size_bytes': pairs_size}
+    
     def filter(self,
                input_pairs: str,
                output_pairs: str,
-               pair_types: List[str] = None) -> Dict[str, Any]:
+               pair_types: Optional[List[str]] = None,
+               min_mapq: Optional[int] = None) -> Dict[str, Any]:
         """
-        Filter pairs by pair type.
+        Filter pairs by pair type and MAPQ score.
         
         Args:
             input_pairs: Path to deduplicated pairs file
             output_pairs: Path to output filtered pairs file
             pair_types: List of pair types to keep (default: ['UU', 'UR', 'RU'])
+            min_mapq: Minimum MAPQ for both sides (default: use self.min_mapq)
             
         Returns:
             Dictionary with filtering statistics
@@ -517,8 +562,21 @@ class HiCPairsProcessor:
         
         if pair_types is None:
             pair_types = ['UU', 'UR', 'RU']
+        if min_mapq is None:
+            min_mapq = self.min_mapq
         
-        filter_expr = ' or '.join([f'(pair_type == "{pt}")' for pt in pair_types])
+        # Build pair type sub-expression
+        type_expr = ' or '.join([f'(pair_type == "{pt}")' for pt in pair_types])
+        
+        # Build MAPQ sub-expression (only if min_mapq > 0)
+        if min_mapq > 0:
+            mapq_expr = f'(mapq1 >= {min_mapq}) and (mapq2 >= {min_mapq})'
+            filter_expr = f'{mapq_expr} and ({type_expr})'
+            logger.info(f"  Filter: MAPQ >= {min_mapq} and pair types {pair_types}")
+        else:
+            filter_expr = type_expr
+            logger.info(f"  Filter: pair types {pair_types} (no MAPQ filter)")
+        
         cmd = f"""pairtools select '{filter_expr}' -o {output_pairs} {input_pairs}"""
         
         _run_command(cmd)
@@ -551,7 +609,7 @@ class HiCPairsProcessor:
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # Step 1: Parse
+        # Step 1: Parse (includes --min-mapq and --add-columns mapq)
         parsed = os.path.join(output_dir, f"{prefix}.parsed.pairs.gz")
         parse_stats = os.path.join(output_dir, f"{prefix}.parse.stats")
         self.parse(input_bam, parsed, parse_stats)
@@ -560,20 +618,34 @@ class HiCPairsProcessor:
         sorted_pairs = os.path.join(output_dir, f"{prefix}.sorted.pairs.gz")
         self.sort(parsed, sorted_pairs, output_dir)
         
-        # Step 3: Dedup
+        # Step 2b: Select standard chromosomes (required before restrict)
+        cleaned_pairs = os.path.join(output_dir, f"{prefix}.cleaned.pairs.gz")
+        self.select_chroms(sorted_pairs, cleaned_pairs)
+        
+        # Step 3: Restrict (if fragment_bed is set)
+        if self.fragment_bed:
+            restricted_pairs = os.path.join(output_dir, f"{prefix}.restricted.pairs.gz")
+            self.restrict(cleaned_pairs, restricted_pairs)
+            dedup_input = restricted_pairs
+        else:
+            dedup_input = cleaned_pairs
+        
+        # Step 4: Dedup
         dedup_pairs = os.path.join(output_dir, f"{prefix}.dedup.pairs.gz")
         dedup_stats = os.path.join(output_dir, f"{prefix}.dedup.stats")
-        self.dedup(sorted_pairs, dedup_pairs, dedup_stats)
+        self.dedup(dedup_input, dedup_pairs, dedup_stats)
         
-        # Step 4: Filter
+        # Step 5: Filter (pair type only — MAPQ already applied at parse)
         filtered_pairs = os.path.join(output_dir, f"{prefix}.filtered.pairs.gz")
-        self.filter(dedup_pairs, filtered_pairs)
+        self.filter(dedup_pairs, filtered_pairs, min_mapq=0)
         
         # Cleanup intermediate files
         if cleanup:
-            for f in [parsed]:
+            for f in [parsed, cleaned_pairs]:
                 if os.path.exists(f):
                     os.remove(f)
+            if self.fragment_bed and os.path.exists(restricted_pairs):
+                os.remove(restricted_pairs)
         
         return {
             'sorted_pairs': sorted_pairs,
@@ -882,8 +954,9 @@ class HiCPipeline:
         sorted_bam = os.path.join(processed_dir, f"{sample_id}_sorted.bam")
         stats_file = os.path.join(qc_dir, f"{sample_id}_bam.stats")
         
-        cmd = f"samtools view -@ {self.threads} -q {self.min_mapq} -bS {input_sam} > {bam_file}"
-        self._run_command(cmd, f"Converting SAM to BAM (MAPQ >= {self.min_mapq})...")
+        # MAPQ filtering deferred to pairtools parse --min-mapq
+        cmd = f"samtools view -@ {self.threads} -bS {input_sam} > {bam_file}"
+        self._run_command(cmd, "Converting SAM to BAM...")
         
         cmd = f"samtools sort -@ {self.threads} -n -o {sorted_bam} {bam_file}"
         self._run_command(cmd, "Sorting BAM by read name...")
