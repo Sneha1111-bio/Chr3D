@@ -1,5 +1,6 @@
 # Copyright (c) 2026 Rudhra Joshi and Yong Chen
 # Licensed under the MIT License. See LICENSE in the project root for details.
+# This software was developed with support from the National Science Foundation under CAREER Award DBI-2239350.
 """Hi-C Loop Calling Module - Chromatin loop calling using cooltools."""
 
 # it is just a helper function, planning to keep it modular 

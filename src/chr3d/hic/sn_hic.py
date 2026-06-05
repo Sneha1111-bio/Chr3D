@@ -1,5 +1,6 @@
 # Copyright (c) 2026 Rudhra Joshi and Yong Chen
 # Licensed under the MIT License. See LICENSE in the project root for details.
+# This software was developed with support from the National Science Foundation under CAREER Award DBI-2239350.
 """Single-Nucleus Hi-C (sn-Hi-C) Analysis Pipeline."""
 
 # this pipeline is heavily dependent on the bulk_hic classes
