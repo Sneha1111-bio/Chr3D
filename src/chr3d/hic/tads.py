@@ -1,4 +1,10 @@
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
 """TAD / Compartment Calling Module - Insulation score and A/B compartment calling."""
+
+
+# it is just a helper function, planning to keep it modular 
+
 
 import os
 import time

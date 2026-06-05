@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
 """
 FDR Correction - Multiple Testing Correction for ChIA-PET Results
 

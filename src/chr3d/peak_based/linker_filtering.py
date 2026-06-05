@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
 """Linker Filtering Module - High-Performance with Parasail SIMD."""
 
 import logging

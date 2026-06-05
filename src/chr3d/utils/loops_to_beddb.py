@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
 """Fast converter: significant-loops CSV + broadPeak -> BEDPE -> bedpedb (HiGlass)."""
 from __future__ import annotations
 

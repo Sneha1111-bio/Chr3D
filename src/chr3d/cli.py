@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
+
+
 """
 Chr3D Command Line Interface
 
@@ -9,40 +13,7 @@ Usage:
     chr3d hichip     Run the HiChIP pipeline (align → dedup → MboI purify → background)
     chr3d digest     Generate restriction fragment BED from genome FASTA
 
-Examples:
-    # Bulk Hi-C
-    chr3d bulk-hic \\
-        --r1 sample_R1.fastq.gz \\
-        --r2 sample_R2.fastq.gz \\
-        --genome /path/to/hg38.fa \\
-        --chrom-sizes /path/to/hg38.chrom.sizes \\
-        --output-dir ./results/my_sample \\
-        --sample-id my_sample
-
-    # sn-Hi-C (manifest file with one cell per line: cell_id<TAB>R1.fastq.gz<TAB>R2.fastq.gz)
-    chr3d sn-hic \\
-        --manifest cells.tsv \\
-        --genome /path/to/hg38.fa \\
-        --chrom-sizes /path/to/hg38.chrom.sizes \\
-        --output-dir ./results/sn_hic
-
-    # ChIA-PET
-    chr3d chia-pet \\
-        --r1 sample_R1.fastq.gz \\
-        --r2 sample_R2.fastq.gz \\
-        --genome /path/to/hg38.fa \\
-        --linkers ACGCGATATCGCG \\
-        --output-dir ./results/chiapet \\
-        --sample-id my_sample
-
-    # HiChIP
-    chr3d hichip \\
-        --r1 sample_R1.fastq.gz \\
-        --r2 sample_R2.fastq.gz \\
-        --genome /path/to/hg38.fa \\
-        --fragments /path/to/hg38_MboI_fragments.bed \\
-        --output-dir ./results/hichip \\
-        --sample-id my_sample
+Look at the Documentation for more details https://chr3d.rudhrajoshi.me/
 """
 
 import argparse
@@ -577,12 +548,6 @@ Steps:
   2. SAM/BAM      samtools sort / index  →  sorted BAM  +  flagstat
   3. Pairs        pairtools parse / sort / dedup / filter  →  .pairs.gz
   4. Matrix       cooler cload / zoomify  →  .cool  +  .mcool
-
-Output layout:
-  <output-dir>/
-  ├── aligned/     sorted BAM + flagstat
-  ├── pairs/       .pairs.gz files
-  └── matrices/    .cool + .mcool
 """,
     )
     inp = bulk.add_argument_group('inputs')
@@ -617,17 +582,6 @@ After all cells:
 
 Manifest format (tab-separated, no header):
   cell_id    R1.fastq.gz    R2.fastq.gz
-
-Output layout:
-  <output-dir>/
-  ├── cells/
-  │   ├── <cell_id>/
-  │   │   ├── aligned/    sorted BAM
-  │   │   ├── pairs/      .pairs.gz
-  │   │   └── matrices/   per-cell .cool
-  │   └── ...
-  ├── pseudobulk/          pseudobulk.cool + pseudobulk.mcool
-  └── qc/                  cell_qc_summary.txt + passing_cells.txt
 """,
     )
     inp = sn.add_argument_group('inputs')
@@ -662,16 +616,6 @@ Steps:
      4d. p-values       →  templates_with_pvalues.csv
      4e. FDR correction →  significant_loops.csv
 
-Output layout:
-  <output-dir>/
-  ├── filtered/    per-linker-category FASTQ + merged filtered FASTQ
-  ├── mapped/      BAM, BEDPE, dedup BEDPE + flagstat
-  ├── peaks/       MACS3 broadPeak + summits
-  ├── loops/
-  │   ├── classified/   P2P / P2D / D2D PET files
-  │   ├── templates/    templates.csv, NB params, p-values
-  │   └── results/      significant_loops.csv
-  └── qc/              pipeline_summary.txt
 """,
     )
     inp = chia.add_argument_group('inputs')
@@ -800,7 +744,7 @@ Full HiChIP analysis pipeline:
 Generate Restriction Fragment BED
 ===================================
 In silico digest a genome FASTA with a restriction enzyme and output a
-BED file of fragments.  This BED file can be passed to bulk-hic / sn-hic
+BED file of fragments.  This BED file can be passed to bulk-hic / sn-hic 
 via --fragment-bed to enable fragment-aware pair parsing with pairtools.
 
 Supported enzyme names: HindIII, DpnII, MboI, BglII, Sau3AI, Hinf1,

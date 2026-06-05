@@ -1,4 +1,10 @@
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
 """Hi-C Analysis Module - Modular Hi-C data processing pipeline."""
+
+"""
+Some common classes are also being imported into sn_hic package
+"""
 
 import os
 import subprocess
@@ -20,6 +26,7 @@ from ..utils.system_info import save_system_info
 logger = get_logger(__name__)
 
 
+# internal function to run all the commands
 def _run_command(cmd: str, description: str = "") -> subprocess.CompletedProcess:
     """Execute a shell command with logging."""
     if description:
@@ -35,7 +42,7 @@ def _run_command(cmd: str, description: str = "") -> subprocess.CompletedProcess
         logger.error(f"STDERR: {e.stderr}")
         raise
 
-
+# before running the pipline it check if all the tools are availabe
 def _check_tool(tool: str) -> bool:
     """Check if a tool is available in PATH."""
     try:
@@ -60,6 +67,11 @@ def _format_duration(seconds: float) -> str:
 
 class FastqSplitter:
     """Split large FASTQ files into smaller chunks for parallel processing."""
+
+    """
+    NEEDS TO BE UPDATED:
+    instead of counting and splitting the file equally i should just split the file without counting which can save time
+    """
     
     def __init__(self, n_chunks: int = 10, reads_per_chunk: Optional[int] = None):
         """Initialize FASTQ splitter."""
@@ -177,7 +189,7 @@ class FastqSplitter:
         
         return chunks
 
-
+# the main aligner function
 class HiCAligner:
     """Hi-C alignment using BWA MEM with -SP5M flags."""
     
@@ -303,6 +315,10 @@ class HiCSamProcessor:
         unsorted_bam = output_bam.replace('.bam', '.unsorted.bam')
         
         # Convert SAM to BAM (MAPQ filtering deferred to pairtools parse --min-mapq)
+        
+        # NEEDS TO BE UPDATED:
+        # remove mapq filtering from here let pairtools handel it
+        
         mapq_opt = f"-q {self.min_mapq}" if self.min_mapq > 0 else ""
         cmd = f"samtools view -@ {self.threads} {mapq_opt} -bS {input_sam} > {unsorted_bam}"
         _run_command(cmd, "Converting SAM to BAM...")

@@ -1,4 +1,8 @@
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
 """Single-Nucleus Hi-C (sn-Hi-C) Analysis Pipeline."""
+
+# this pipeline is heavily dependent on the bulk_hic classes
 
 import os
 import logging

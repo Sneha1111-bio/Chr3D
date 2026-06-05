@@ -3,6 +3,18 @@
 
 **Chr3D** is a unified, end-to-end framework for analyzing 3D chromatin architecture data. It supports bulk Hi-C, single-nucleus Hi-C, HiChIP and ChIA-PET through a single modular CLI & Python API.
 
+**Note:** TUI Interface is also in development
+
+# Supports
+
+- ChiaPET
+- HiChIP
+- Hic
+- snHIC
+- HiGlass
+- Restriction Site Generation & Detection
+- File converters
+
 # Docs
 
 Check out the docs at [Chr3D Docs](https://chr3d.rudhrajoshi.me/)
@@ -47,4 +59,15 @@ Or use the Python API:
 import chr3d as c3d
 print(c3d.__version__)
 ```
+
+
+## Future Plans & Fixes
+
+- [ ] Removing counting before splitting files
+- [ ] Update API make it even more flexible
+- [ ] Add TUI based interface
+- [ ] Add config file as input in Command & TUI
+- [ ] Update Logging make it even more flexible
+- [ ] Update file Conversion scripts
+
 

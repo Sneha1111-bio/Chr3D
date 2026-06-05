@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Rudhra Joshi and Yong Chen
+# Licensed under the MIT License. See LICENSE in the project root for details.
 """ChIA-PET Pipeline Quality Report Generator - Author: Rudra Joshi - Version: 2.0.0"""
 
 import os, yaml
