@@ -313,11 +313,14 @@ def preprocess_text(data_file, resolution_str, output_dir, chrom_sizes_file,
         'cell_id':          pl.Int64,
         'chrom1':           pl.String,
         'chrom2':           pl.String,
-        'pos1':             pl.Int64,
-        'pos2':             pl.Int64,
+        'pos1':             pl.Float64,
+        'pos2':             pl.Float64,
         'count':            pl.Float32,
         'normalized_count': pl.Float32,
-    })
+    }).with_columns([
+        pl.col('pos1').cast(pl.Int64),
+        pl.col('pos2').cast(pl.Int64),
+    ])
     print(f"  Loaded {len(df):,} contacts in {time.time()-t0:.1f}s")
 
     df = df.filter(pl.col('chrom1') == pl.col('chrom2'))
@@ -541,11 +544,12 @@ def preprocess_mcool(mcool_dir, resolution_str, output_dir, chrom_sizes_file,
                 ok = (ch1 == ch2) & np.isin(ch1, allow_chroms)
                 if not ok.any():
                     all_contacts.append(None); continue
+                starts = bins['start'].values
                 b1, b2, ch1 = b1[ok], b2[ok], ch1[ok]
                 cs  = px['count'].values[ok].astype(np.float32)
                 offsets = np.array([chrom_offsets[c] for c in ch1], dtype=np.int64)
-                gb1 = offsets + (b1 // factor)
-                gb2 = offsets + (b2 // factor)
+                gb1 = offsets + (starts[b1] // resolution_bp)
+                gb2 = offsets + (starts[b2] // resolution_bp)
                 all_contacts.append({'bin1': gb1.astype(np.int32),
                                      'bin2': gb2.astype(np.int32),
                                      'count': cs,
