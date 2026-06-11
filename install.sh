@@ -41,11 +41,24 @@ conda install -c conda-forge -y \
 
 conda install -c bioconda parasail-python -y
 
-echo "[6/7] Installing additional Python packages (pip)..."
+echo "[6/8] Installing scHi-C clustering dependencies..."
+conda install -c conda-forge -y \
+    scanpy \
+    python-igraph \
+    leidenalg \
+    scikit-learn \
+    umap-learn \
+    anndata \
+    seaborn
+
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install torch-geometric
+
+echo "[7/8] Installing additional Python packages (pip)..."
 pip install clodius
 pip install higlass-python
 
-echo "[7/7] Installing Chr3D package (editable mode)..."
+echo "[8/8] Installing Chr3D package (editable mode)..."
 cd "$(dirname "$0")"
 pip install -e .
 
@@ -56,6 +69,17 @@ import chr3d as c3d
 print(f'  chr3d version: {c3d.__version__}')
 print(f'  Available: {\", \".join([x for x in dir(c3d) if not x.startswith(\"_\")])}')
 " && echo "  ✓ Chr3D package installed successfully" || echo "  ✗ Chr3D package installation FAILED"
+
+# Verify clustering dependencies
+$CONDA_PREFIX/bin/python -c "
+import torch
+import torch_geometric
+import scanpy
+import leidenalg
+import igraph
+import umap
+print('  ✓ Clustering dependencies: torch, torch-geometric, scanpy, leidenalg, igraph, umap')
+" && echo "  ✓ scHi-C clustering dependencies OK" || echo "  ✗ Some clustering dependencies failed"
 
 # # Verify external tools
 # echo ""
