@@ -360,59 +360,6 @@ def plot_confusion(true_labels, pred_labels, label_names, out_prefix):
     plt.close(fig)
 
 
-def plot_pca_variance(pca_model, out_prefix):
-    """Save PCA variance diagnostics for the fitted feature-reduction model.
-
-    Writes three files alongside the other outputs:
-      - {out_prefix}_pca_scree.png      : bar chart of % variance per PC
-      - {out_prefix}_pca_cumulative.png : cumulative % variance vs #components
-                                          with reference lines at 50% and 80%
-      - {out_prefix}_pca_variance.csv   : per-PC variance ratios
-    """
-    print("  PCA variance...")
-    var_ratio = np.asarray(pca_model.explained_variance_ratio_)
-    n_comp    = var_ratio.shape[0]
-    pcs       = np.arange(1, n_comp + 1)
-    var_pct   = var_ratio * 100.0
-    cum_pct   = np.cumsum(var_pct)
-
-    # Per-PC variance ratios → CSV
-    pd.DataFrame({
-        'pc':                   pcs,
-        'explained_variance_ratio': var_ratio,
-        'variance_pct':         var_pct,
-        'cumulative_variance_pct': cum_pct,
-    }).to_csv(f'{out_prefix}_pca_variance.csv', index=False)
-
-    # Scree plot: variance % per principal component
-    fig, ax = plt.subplots(figsize=(max(8, n_comp * 0.18), 4.5))
-    ax.bar(pcs, var_pct, color='steelblue', edgecolor='none')
-    ax.set_xlabel('Principal component')
-    ax.set_ylabel('Variance explained (%)')
-    ax.set_title(f'PCA scree plot ({n_comp} components)',
-                 fontsize=13, fontweight='bold')
-    fig.tight_layout()
-    fig.savefig(f'{out_prefix}_pca_scree.png', dpi=200,
-                bbox_inches='tight', facecolor='white')
-    plt.close(fig)
-
-    # Cumulative variance curve with 50% / 80% reference lines
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.plot(pcs, cum_pct, marker='o', ms=3, lw=1.5, color='darkorange')
-    for ref in (50, 80):
-        ax.axhline(ref, color='gray', linestyle='--', alpha=0.7)
-        ax.text(pcs[-1], ref, f' {ref}%', va='center', ha='left',
-                fontsize=9, color='gray')
-    ax.set_ylim(0, 100)
-    ax.set_xlabel('Number of components')
-    ax.set_ylabel('Cumulative variance explained (%)')
-    ax.set_title('PCA cumulative variance', fontsize=13, fontweight='bold')
-    fig.tight_layout()
-    fig.savefig(f'{out_prefix}_pca_cumulative.png', dpi=200,
-                bbox_inches='tight', facecolor='white')
-    plt.close(fig)
-
-
 def plot_loss_curve(losses, out_prefix):
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(range(1, len(losses) + 1), losses, lw=1.5, color='steelblue')
@@ -568,7 +515,6 @@ def main():
 
     print("\n[PLOTS] Generating visualizations...")
     plot_loss_curve(all_losses, out_prefix)
-    plot_pca_variance(pca_model, out_prefix)
     nc_final = len(np.unique(best_pred))
     if nc_final >= 2:
         plot_umap(embeddings, best_pred, out_prefix, true_labels, label_names)
@@ -579,9 +525,7 @@ def main():
     else:
         print(f"  Skipping UMAP/PCA/silhouette: only {nc_final} cluster (need ≥2)")
 
-    saved = [f'{out_prefix}_loss.png', f'{out_prefix}_pca_scree.png',
-             f'{out_prefix}_pca_cumulative.png', f'{out_prefix}_pca_variance.csv',
-             f'{out_prefix}_results.csv',
+    saved = [f'{out_prefix}_loss.png', f'{out_prefix}_results.csv',
              f'{out_prefix}_predictions.csv', f'{out_prefix}_embeddings.npy',
              f'{out_prefix}_model.pth']
     if nc_final >= 2:
