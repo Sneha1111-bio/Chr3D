@@ -86,6 +86,10 @@ def parse_args():
                    help='Target number of clusters. If set, Leiden grid search only '
                         'considers clusterings within ±1 of this value. '
                         'If unset, all cluster counts are considered (default).')
+    p.add_argument('--graph-metric', default='euclidean',
+                   choices=['euclidean', 'cosine', 'manhattan', 'correlation'],
+                   help='Distance metric used to find neighbours when building the '
+                        'kNN cell graph (default: euclidean).')
     return p.parse_args()
 
 
@@ -467,9 +471,9 @@ def main():
           f"{pca_model.explained_variance_ratio_[:5].cumsum()[-1]:.1%}")
 
     k_graph = min(args.k_graph, len(cell_ids) - 1)
-    print(f"\n[GRAPH] Building kNN graph (k={k_graph})...")
+    print(f"\n[GRAPH] Building kNN graph (k={k_graph}, metric={args.graph_metric})...")
     A = kneighbors_graph(X_pca, n_neighbors=k_graph, mode='connectivity',
-                         include_self=False, n_jobs=-1)
+                         metric=args.graph_metric, include_self=False, n_jobs=-1)
     A = A + A.T
     A[A > 1] = 1
     rows, cols = A.nonzero()
@@ -546,7 +550,8 @@ def main():
         print()
 
     # Save results
-    res_row = {'seed': args.seed, 'silhouette': best_sil,
+    res_row = {'seed': args.seed, 'graph_metric': args.graph_metric,
+               'silhouette': best_sil,
                'n_clusters': int(len(np.unique(best_pred))), 'config': best_tag}
     if true_labels is not None:
         res_row.update({'nmi': best_nmi, 'ari': best_ari})
